@@ -198,6 +198,24 @@ class AppTests(unittest.TestCase):
         prompts=[main.analysis_prompt(scope) for scope in ['overall','round','player']]
         self.assertEqual(len(set(prompts)),3)
 
+    def test_point_ranking_metrics_match_history_and_exclude_scoring_rewards(self):
+        before=self.client.get('/api/stats').json()
+        for player in before['players']:
+            trend=player['trend']
+            self.assertEqual(player['net_total'],sum(row['net'] for row in trend))
+            self.assertEqual(player['net_total'],player['details']['net_total'])
+            self.assertEqual(player['net_average'],player['details']['net_average'])
+            for key in ['net_total','net_average','average_points','best_points','worst_points']:
+                self.assertEqual(trend[-1][key],player[key])
+            self.assertEqual(player['best_points'],max(row['points'] for row in trend))
+            self.assertEqual(player['worst_points'],min(row['points'] for row in trend))
+        self.client.put('/api/admin/rule',json={'name':'不同结算','starting':25000,'returning':30000,'uma':[25,5,-5,-25]})
+        after=self.client.get('/api/stats').json()
+        by_id={player['user_id']:player for player in after['players']}
+        for player in before['players']:
+            for key in ['net_total','net_average','average_points','best_points','worst_points']:
+                self.assertEqual(player[key],by_id[player['user_id']][key])
+
     def test_legacy_analysis_is_marked_for_new_interpretation(self):
         with storage.db() as c:
             snapshot=main.analysis_scope(c,'overall',0)
@@ -216,6 +234,51 @@ class AppTests(unittest.TestCase):
         for scope in ['overall','round','player']:
             self.assertNotIn('{{',main.analysis_prompt(scope))
         with self.assertRaises(ValueError):main.analysis_prompt('../common')
+
+    def test_admin_prompt_edit_conflict_validation_and_reset(self):
+        original=self.client.get('/api/admin/prompts').json()
+        values={**original['prompts'],'revision':original['revision']}
+        changed={**values,'overall':values['overall']+'\n重点解释低顺位损失。'}
+        saved=self.client.put('/api/admin/prompts',json=changed)
+        self.assertEqual(saved.status_code,200)
+        self.assertEqual(saved.json()['changed'],['overall'])
+        current=self.client.get('/api/admin/prompts').json()
+        self.assertEqual(current['prompts']['overall'],changed['overall'])
+        self.assertEqual(current['customized'],['overall'])
+        self.assertEqual(self.client.put('/api/admin/prompts',json=values).status_code,409)
+        invalid={**current['prompts'],'revision':current['revision'],'common':'   '}
+        self.assertEqual(self.client.put('/api/admin/prompts',json=invalid).status_code,422)
+        reset={**original['defaults'],'revision':current['revision']}
+        self.assertEqual(self.client.put('/api/admin/prompts',json=reset).status_code,200)
+        self.assertEqual(self.client.get('/api/admin/prompts').json()['customized'],[])
+        self.login('linyi')
+        self.assertEqual(self.client.get('/api/admin/prompts').status_code,403)
+        self.assertEqual(self.client.put('/api/admin/prompts',json=reset).status_code,403)
+
+    def test_prompt_changes_stale_only_relevant_scope_and_job_uses_snapshot(self):
+        with storage.db() as c:
+            overall=main.analysis_scope(c,'overall',0)
+            player=main.analysis_scope(c,'player',1)
+            for scope,target,snapshot in [('overall',0,overall),('player',1,player)]:
+                c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,analysis_version,prompt_hash) VALUES(?,?,?,?,?,?,?,?)',
+                          (scope,target,snapshot['data_hash'],'旧正文','fake',storage.now(),main.ANALYSIS_VERSION,main.prompt_fingerprint(main.analysis_prompt(scope))))
+            c.execute("INSERT INTO jobs(id,status,created_at) VALUES('snapshot','running',?)",(storage.now(),))
+        original=self.client.get('/api/admin/prompts').json()
+        changed={**original['prompts'],'revision':0,'overall':'新的综合指令'}
+        self.client.put('/api/admin/prompts',json=changed)
+        self.assertTrue(self.client.get('/api/analysis').json()['analysis']['style_outdated'])
+        self.assertFalse(self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['style_outdated'])
+        cfg={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'secret',
+             '_analysis_prompt':main.analysis_prompt('overall')}
+        with patch('app.main.httpx.Client') as fake:
+            provider=fake.return_value.__enter__.return_value
+            provider.post.return_value.json.return_value={'choices':[{'message':{'content':'快照生成的正文'}}]}
+            main.run_analysis('snapshot','overall',0,cfg,overall)
+            self.assertEqual(provider.post.call_args.kwargs['json']['messages'][0]['content'],cfg['_analysis_prompt'])
+        self.assertTrue(self.client.get('/api/analysis').json()['analysis']['style_outdated'])
+        current=self.client.get('/api/admin/prompts').json()
+        self.client.put('/api/admin/prompts',json={**current['prompts'],'revision':current['revision'],'common':'新的通用指令'})
+        self.assertTrue(self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['style_outdated'])
 
     def test_deepseek_test_uses_unsaved_form_without_saving_key(self):
         saved={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'saved-secret'}
@@ -296,12 +359,12 @@ class AppTests(unittest.TestCase):
 
     def test_version_and_assets_are_not_cached(self):
         health=self.client.get('/health')
-        self.assertEqual(health.json()['version'],'1.0.4')
+        self.assertEqual(health.json()['version'],'1.0.7')
         for path in ['/','/health','/static/app.js']:
             response=self.client.get(path)
             self.assertEqual(response.headers['cache-control'],'no-store')
-            self.assertEqual(response.headers['x-app-version'],'1.0.4')
-        self.assertIn('/static/app.js?v=1.0.4',self.client.get('/').text)
+            self.assertEqual(response.headers['x-app-version'],'1.0.7')
+        self.assertIn('/static/app.js?v=1.0.7',self.client.get('/').text)
 
     def test_public_ip_fallback_rejects_private_and_ipv6(self):
         def response(value):

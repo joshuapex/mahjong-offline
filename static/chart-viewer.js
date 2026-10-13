@@ -2,19 +2,20 @@
 
 function chartSvg(players,expanded=false,width=620,height=250) {
   const mine=state.page==='mine',metric=mine?(state.personalMetric||'score'):state.metric,defs=mine?personalMetrics:metrics,key=defs[metric][1],timeline=state.stats.timeline;
-  if(!players.length||!timeline.length)return '<div class="empty">该范围没有勾选玩家的战绩。</div>';
+  const unit=metric.includes('rate')?'%':key.includes('points')||key.includes('net')?' 点':'';
+  if(!players.length||!timeline.length)return '<div class="empty">该范围暂无有效战绩。</div>';
   const series=players.map(p=>({player:p,values:chartSeries(p,timeline,key)})),values=series.flatMap(s=>s.values.map(t=>t.value));
   let lo=Math.min(0,...values),hi=Math.max(...values);if(hi===lo)hi=lo+1;
-  const gap=expanded?22:16,first=timeline[0].global_index,last=timeline[timeline.length-1].global_index,W=width,H=Math.max(height,series.length*gap+50),L=expanded?65:50,R=expanded?Math.min(210,W*.25):115,T=20,B=30,x=index=>L+(index-first)/Math.max(1,last-first)*(W-L-R),y=value=>T+(hi-value)/(hi-lo)*(H-T-B);
+  const gap=expanded?22:16,first=timeline[0].global_index,last=timeline[timeline.length-1].global_index,W=width,H=Math.max(height,series.length*gap+50),L=expanded?80:(unit===' 点'?80:50),R=expanded?Math.min(210,W*.25):115,T=20,B=30,x=index=>L+(index-first)/Math.max(1,last-first)*(W-L-R),y=value=>T+(hi-value)/(hi-lo)*(H-T-B);
   let svg=`<svg class="chart ${expanded?'chart-expanded':''}" viewBox="0 0 ${W} ${H}" role="img" tabindex="0" aria-label="${esc(defs[metric][0])}走势，历史第${first}至${last}场" data-first-index="${first}" data-last-index="${last}">`;
-  for(let n=0;n<5;n++){const v=lo+(hi-lo)*n/4,yy=y(v);svg+=`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#e5e8dd"/><text x="${L-8}" y="${yy+3}" text-anchor="end">${fmt(Math.round(v*10)/10)}</text>`;}
+  for(let n=0;n<5;n++){const v=lo+(hi-lo)*n/4,yy=y(v);svg+=`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#e5e8dd"/><text x="${L-8}" y="${yy+3}" text-anchor="end">${fmt(Math.round(v*10)/10)}${unit}</text>`;}
   const ticks=[...new Set([first,...Array.from({length:3},(_,i)=>Math.round(first+(last-first)*(i+1)/4)),last])];
   ticks.forEach(index=>{svg+=`<text x="${x(index)}" y="${H-5}" text-anchor="${index===first?'start':index===last?'end':'middle'}">第 ${index} 场</text>`;});
   const labels=[];
   for(const {player:p,values:list} of series){
     const color=chartColor(state.stats.players.findIndex(t=>t.user_id===p.user_id));
     svg+=`<polyline data-player="${p.user_id}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" points="${list.map(t=>x(t.global_index)+','+y(t.value)).join(' ')}"/>`;
-    for(const t of list)if(t.participated)svg+=`<circle data-player="${p.user_id}" data-global-index="${t.global_index}" cx="${x(t.global_index)}" cy="${y(t.value)}" r="4" fill="${color}" tabindex="0"><title>${esc(p.nickname)} · 历史第 ${t.global_index} 场 · ${esc(t.time)} · ${t.value}${metric.includes('rate')?'%':''}</title></circle>`;
+    for(const t of list)if(t.participated)svg+=`<circle data-player="${p.user_id}" data-global-index="${t.global_index}" cx="${x(t.global_index)}" cy="${y(t.value)}" r="4" fill="${color}" tabindex="0"><title>${esc(p.nickname)} · 历史第 ${t.global_index} 场 · ${esc(t.time)} · ${t.value}${unit}</title></circle>`;
     if(list.length){const end=list[list.length-1];labels.push({player:p,color,x:x(end.global_index),y:y(end.value),position:y(end.value)});}
   }
   labels.sort((a,b)=>a.y-b.y);

@@ -24,9 +24,9 @@ from pydantic import BaseModel, Field
 
 from .db import ROOT, DB_PATH, TZ, RULE, db, init_db, now, setting, set_setting, audit, group_rows, regroup, rule_catalog, scoring_rule
 from .stats import SEATS, records, summary, settle
-from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence
+from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence, default_prompts, prompt_fingerprint
 
-APP_VERSION='1.0.4'
+APP_VERSION='1.0.7'
 
 
 @asynccontextmanager
@@ -559,10 +559,48 @@ def llm_failure_message(error):
     return 'AI 分析处理失败，请检查服务运行状态后重试'
 
 
+class PromptSettings(BaseModel):
+    common:str = Field(min_length=1,max_length=20000)
+    overall:str = Field(min_length=1,max_length=20000)
+    round:str = Field(min_length=1,max_length=20000)
+    player:str = Field(min_length=1,max_length=20000)
+    revision:int = Field(ge=0)
+
+
+@app.get('/api/admin/prompts')
+def prompt_settings(u=Depends(admin)):
+    with db() as c: saved=setting(c,'analysis_prompts',{})
+    defaults=default_prompts()
+    return {'prompts':{**defaults,**saved.get('overrides',{})},'defaults':defaults,
+            'revision':saved.get('revision',0),'customized':list(saved.get('overrides',{}))}
+
+
+@app.put('/api/admin/prompts')
+def save_prompts(data:PromptSettings,u=Depends(admin)):
+    defaults=default_prompts()
+    values={name:getattr(data,name).strip() for name in defaults}
+    if not all(values.values()): raise HTTPException(422,'提示词不能为空或仅包含空白')
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        saved=setting(c,'analysis_prompts',{})
+        if data.revision!=saved.get('revision',0):
+            raise HTTPException(409,'提示词已在其他页面修改，请刷新后重新编辑')
+        overrides={name:value for name,value in values.items() if value!=defaults[name]}
+        changed=[name for name,value in values.items() if value!={**defaults,**saved.get('overrides',{})}[name]]
+        revision=saved.get('revision',0)+(1 if changed else 0)
+        set_setting(c,'analysis_prompts',{'revision':revision,'overrides':overrides})
+        if changed: audit(c,u['id'],'prompt_config','analysis_prompts',after={'changed':changed,'revision':revision})
+    return {'ok':True,'revision':revision,'changed':changed}
+
+
 def run_analysis(jobid,scope,target,cfg,snapshot):
     try:
         compact=analysis_evidence(scope,snapshot)
-        payload={'model':cfg['model'],'messages':[{'role':'system','content':analysis_prompt(scope)},{'role':'user','content':json.dumps(compact,ensure_ascii=False)}],'max_tokens':4096}
+        prompt=cfg.get('_analysis_prompt')
+        if prompt is None:
+            with db() as c: overrides=setting(c,'analysis_prompts',{}).get('overrides',{})
+            prompt=analysis_prompt(scope,overrides)
+        payload={'model':cfg['model'],'messages':[{'role':'system','content':prompt},{'role':'user','content':json.dumps(compact,ensure_ascii=False)}],'max_tokens':4096}
         if urlparse(cfg['base_url']).hostname=='api.deepseek.com':
             thinking=cfg.get('thinking',False)
             payload['thinking']={'type':'enabled' if thinking else 'disabled'}
@@ -581,7 +619,7 @@ def run_analysis(jobid,scope,target,cfg,snapshot):
                 return
             if not isinstance(content,str): raise TypeError('invalid model content')
         with db() as c:
-            c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json,analysis_version) VALUES(?,?,?,?,?,?,?,?,?)',(scope,target,snapshot['data_hash'],content[:12000],cfg['model'],now(),snapshot['scoring_rule']['version'],json.dumps(snapshot['scoring_rule']),ANALYSIS_VERSION))
+            c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json,analysis_version,prompt_hash) VALUES(?,?,?,?,?,?,?,?,?,?)',(scope,target,snapshot['data_hash'],content[:12000],cfg['model'],now(),snapshot['scoring_rule']['version'],json.dumps(snapshot['scoring_rule']),ANALYSIS_VERSION,prompt_fingerprint(prompt)))
             c.execute("UPDATE jobs SET status='done',finished_at=? WHERE id=?",(now(),jobid))
     except Exception as error:
         # Provider errors may contain authorization or request data; never expose them.
@@ -601,7 +639,9 @@ def analysis(scope:str='overall',target:int=0,u=Depends(auth)):
         row=c.execute('SELECT * FROM analyses WHERE scope=? AND target=? AND rule_id=? ORDER BY id DESC LIMIT 1',(scope,target,data['scoring_rule']['version'])).fetchone()
         if not row: return {'analysis':None}
         item=dict(row); item['text']=replace_names(item.pop('payload'),c)
-        item['style_outdated']=item['analysis_version']!=ANALYSIS_VERSION
+        prompt=analysis_prompt(scope,setting(c,'analysis_prompts',{}).get('overrides',{}))
+        prior_hash=item.get('prompt_hash') or prompt_fingerprint(analysis_prompt(scope))
+        item['style_outdated']=item['analysis_version']!=ANALYSIS_VERSION or prior_hash!=prompt_fingerprint(prompt)
         item['stale']=item['data_hash']!=data['data_hash'] or item['style_outdated']
         return {'analysis':item}
 
@@ -613,6 +653,7 @@ def generate_analysis(data:AnalysisInput,u=Depends(recorder)):
         snapshot=analysis_scope(c,data.scope,data.target)
         if not snapshot['count']: raise HTTPException(422,'该范围没有有效对局')
         cfg=setting(c,'llm',{})
+        cfg={**cfg,'_analysis_prompt':analysis_prompt(data.scope,setting(c,'analysis_prompts',{}).get('overrides',{}))}
         if not all(cfg.get(k) for k in ['base_url','model','api_key']): raise HTTPException(422,'请管理员先配置 LLM')
         if c.execute("SELECT 1 FROM jobs WHERE status='running'").fetchone(): raise HTTPException(409,'已有分析任务生成中，请稍后再试')
         jobid=secrets.token_hex(16)

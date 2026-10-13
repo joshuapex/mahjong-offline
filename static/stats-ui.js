@@ -60,12 +60,14 @@ async function statsPage() {
   const kpis=mine?[['参与场数',p?.count||0,'所选范围的有效对局'],['累计成绩',signed(p?.total||0),'含 Uma / Oka'],['平均顺位',p?p.average_rank.toFixed(2):'—','数值越低，顺位越好'],['连对率',p?p.top2_rate+'%':'—','一位 + 二位比例']]:[['有效对局',d.count,'所选统计范围'],['参赛玩家',d.players.length,'包含历史停用玩家'],['累计领先',leader?.nickname||'—',leader?signed(leader.total)+' 分':'暂无对局'],['我的平均顺位',p?p.average_rank.toFixed(2):'—',p?p.count+' 场样本':'尚未参赛']];
   const ranking=mine?`<section class="card"><div class="card-head"><h2>个人走势</h2><small>按全体历史场次对齐</small></div><div id="ranking-content"></div></section>`:`<section class="card"><div class="card-head"><h2>排行榜</h2><div class="segmented"><button id="table-view" class="${state.view==='table'?'active':''}">表格</button><button id="chart-view" class="${state.view==='chart'?'active':''}">折线图</button></div></div><div id="ranking-content"></div></section>`;
   const ai=`<section class="card ai-card" id="ai-section"><div class="card-head"><div class="player-cell"><span class="ai-icon">✦</span><h2>AI 战绩解读</h2></div>${canRecord()?'<button class="button small" id="generate-ai">生成分析</button>':''}</div><div id="ai-content" class="muted">正在读取分析…</div></section>`;
+  const distribution=`<section class="card"><div class="card-head"><h2>顺位分布</h2><small>占各玩家自身参赛场数</small></div><div id="rank-distribution"></div></section>`;
+  const peers=mine&&p?coplayerDetails(p).replace('card section-gap','card'):'';
+  const statsLayout=`<div class="grid-two ${mine?'personal-stats-layout section-gap':'public-stats-layout'}"><div class="${mine?'personal-stats-left':'public-stats-left'}">${ranking}${distribution}${peers}</div>${ai}</div>`;
   const header=pageTop(mine?'MY SCOREBOOK':'CLUB SCOREBOARD',mine?(uid===state.user.id?'我的数据':(state.players.find(p=>p.id===uid)?.nickname||'玩家')+'的数据'):'公共战绩',sub,mine?(uid===state.user.id?'<button id="profile-button" class="button">账号设置</button>':''):canRecord()?'<button class="button primary" data-nav="entry">＋ 记一场</button>':'');
   const content=`<div class="kpis">${kpis.map((k,i)=>`<div class="card kpi ${i===0?'featured':''}"><div class="label">${k[0]}</div><div class="value">${esc(k[1])}</div><div class="foot">${esc(k[2])}</div></div>`).join('')}</div>`+
     `<div class="rule-scope-note notice good">统一结算规则：${esc(d.scoring_rule.name)} · 由管理员设置，全部统计页面使用该规则。</div>`+
-    (mine&&p?personalDetails(p):'')+`<div class="grid-two ${mine?'section-gap':''}">${ranking}${ai}</div>`+
-    `<section class="card section-gap"><div class="card-head"><h2>顺位分布</h2><small>占各玩家自身参赛场数</small></div><div id="rank-distribution"></div></section>`+
-    (mine&&p?seatDetails(p)+coplayerDetails(p):'')+
+    (mine&&p?personalDetails(p):'')+statsLayout+
+    (mine&&p?seatDetails(p):'')+
     `<section class="card section-gap"><div class="card-head"><h2>${mine?'我的参赛记录':'对局记录'}</h2><a class="button small" href="/api/export">导出全部 CSV</a></div><div id="records-content"></div></section>`;
   const oldBody=$('#stats-body'),reuse=oldBody?.dataset.page===page;
   const scrollY=window.scrollY;
@@ -108,14 +110,23 @@ function coplayerDetails(p) {
   return `<section class="card section-gap" id="coplayer-details"><div class="card-head"><h2>同桌玩家的影响</h2><small>按同桌场数排序</small></div><p class="chart-note">比较本人和每位玩家同桌、未同桌时的表现；差值为「同桌 − 未同桌」。平均顺位、四位率越低越好，其余指标越高越好。同桌成员、时间和样本可能不同，差异不表示因果或打法影响。</p><div class="coplayer-list">${peers.map(peer=>`<details class="coplayer-row"><summary><span><strong>${esc(peer.nickname)}</strong><small>同桌 ${peer.together.count} 场 / 未同桌 ${peer.apart.count} 场</small></span><span><strong>${signed(peer.together.average)}</strong><small>同桌平均成绩</small></span></summary><div class="coplayer-body"><p class="notice">${!peer.apart.count?'所有已记录对局均同桌，没有未同桌样本，无法比较差异。':peer.small_sample?'至少一组少于 5 场，样本偏少，请谨慎比较。':'两组样本均不少于 5 场，仍仅描述已记录的表现。'}</p><div class="coplayer-comparison"><div class="coplayer-heading"><span>指标</span><span>同桌</span><span>未同桌</span><span>差值</span></div>${fields.map(([key,label,unit])=>`<div><span>${label}</span><span>${value(peer.together[key],unit)}</span><span>${value(peer.apart[key],unit)}</span><span>${peer.difference[key]===null?'—':signed(peer.difference[key])+(unit==='%'?' 个百分点':unit?' '+unit:'')}</span></div>`).join('')}</div><div class="coplayer-direct"><span>顺位领先率<strong>${fmt(peer.ahead_rate)}%</strong><small>同桌时本人的顺位优于该玩家</small></span><span>平均点棒差<strong>${signed(peer.points_gap)} 点</strong><small>本人终局点棒 − 该玩家终局点棒</small></span></div></div></details>`).join('')||'<div class="empty">暂无同桌玩家数据。</div>'}</div></section>`;
 }
 
-function ensureSelected(players) {
-  if(!state.selectedPlayers){state.selectedPlayers=new Set(players.map(p=>p.user_id));state.knownPlayers=new Set();}
-  for(const p of players)if(!state.knownPlayers.has(p.user_id)){state.selectedPlayers.add(p.user_id);state.knownPlayers.add(p.user_id);}
+function metricTabs(options,selected,label){
+  return `<div class="metric-tabs" role="tablist" aria-label="${label}">${Object.entries(options).map(([key,value])=>`<button type="button" role="tab" aria-selected="${key===selected}" tabindex="${key===selected?0:-1}" data-metric="${key}" class="${key===selected?'active':''}">${value[0]}</button>`).join('')}</div>`;
+}
+function bindMetricTabs(select){
+  listen('[data-metric]','click',e=>{const value=e.currentTarget.dataset.metric;select(value);const active=$('[data-metric="'+value+'"]');active?.focus({preventScroll:true});active?.scrollIntoView({block:'nearest',inline:'nearest'});});
+  listen('[data-metric]','keydown',e=>{
+    const tabs=[...document.querySelectorAll('[data-metric]')],index=tabs.indexOf(e.currentTarget);
+    const next=e.key==='ArrowRight'?(index+1)%tabs.length:e.key==='ArrowLeft'?(index-1+tabs.length)%tabs.length:e.key==='Home'?0:e.key==='End'?tabs.length-1:null;
+    if(next!==null){e.preventDefault();tabs[next].click();}
+  });
 }
 
 function rankValue(p,key) {
   if(key==='total'||key==='average')return signed(p[key]);
   if(key==='average_rank')return p[key].toFixed(2);
+  if(['net_total','net_average'].includes(key))return signed(p[key])+' 点';
+  if(['average_points','best_points','worst_points'].includes(key))return fmt(p[key])+' 点';
   return fmt(p[key])+'%';
 }
 
@@ -124,44 +135,36 @@ function mobileRanking(players) {
   if(!state.expandedRankUsers)state.expandedRankUsers=new Set();
   return `<div class="mobile-ranking"><div class="mobile-rank-heading"><span>排名 / 玩家</span><span>${metrics[primary][0]}</span><span>${metrics[secondary][0]}</span></div>${players.map((p,i)=>{
     const rank=i&&p[primary]===players[i-1][primary]?players.findIndex(x=>x[primary]===p[primary])+1:i+1;
-    const values=[['参赛场数',p.count+' 场'],['累计成绩',signed(p.total)],['平均成绩',signed(p.average)],['平均顺位',p.average_rank.toFixed(2)],['一位率',p.first_rate+'%'],['连对率',p.top2_rate+'%'],['四位率',p.last_rate+'%'],['平均终局点棒',fmt(p.average_points)],['最高终局点棒',fmt(p.best_points)],['最低终局点棒',fmt(p.worst_points)]];
+    const values=[['参赛场数',p.count+' 场'],['累计成绩',signed(p.total)],['平均成绩',signed(p.average)],['平均顺位',p.average_rank.toFixed(2)],['一位率',p.first_rate+'%'],['连对率',p.top2_rate+'%'],['四位率',p.last_rate+'%'],['平均终局点棒',fmt(p.average_points)],['最高终局点棒',fmt(p.best_points)],['最低终局点棒',fmt(p.worst_points)],['累计净点棒',signed(p.net_total)+' 点'],['平均净点棒',signed(p.net_average)+' 点']];
     return `<details class="mobile-rank-row" data-rank-user="${p.user_id}" ${state.expandedRankUsers.has(p.user_id)?'open':''}><summary><span class="mobile-rank-player"><span class="rank-number ${rank===1?'first':''}">${rank}</span><span class="mobile-rank-identity"><strong>${esc(p.nickname)}</strong><small>${p.count} 场 · 点击展开</small></span></span><strong class="mobile-rank-value ${['total','average'].includes(primary)?cls(p[primary]):''}">${rankValue(p,primary)}</strong><span class="mobile-rank-value ${secondary==='total'?cls(p.total):''}">${rankValue(p,secondary)}</span></summary><div class="mobile-rank-details"><dl>${values.map(([label,value])=>`<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl><button class="button small soft" data-view-player="${p.user_id}">查看个人战绩 →</button></div></details>`;
   }).join('')}<p class="chart-note">点击玩家行展开完整数据；相同指标并列排名。</p></div>`;
 }
 
 function renderRanking(chart) {
-  const mine=state.page==='mine',fixedRound=!mine&&chart&&state.tab==='round',players=state.stats.players;
-  if(!mine){$('#table-view').classList.toggle('active',!chart);$('#chart-view').classList.toggle('active',chart);ensureSelected(players);}
-  const selected=()=>players.filter(p=>!chart||mine||fixedRound||state.selectedPlayers.has(p.user_id));
+  const mine=state.page==='mine',players=state.stats.players;
+  if(!mine){$('#table-view').classList.toggle('active',!chart);$('#chart-view').classList.toggle('active',chart);}
+  const selected=()=>[...players];
   $('#ranking-content').innerHTML=chart?'<div id="chart-panel"></div>':'<div id="table-panel"></div>';
   const redraw=()=>{
     const shown=selected();
     if(chart){
       const options=mine?personalMetrics:metrics,metric=mine?(state.personalMetric||'score'):state.metric;
-      $('#chart-panel').innerHTML=`<div class="chart-metric-picker"><label for="chart-metric">走势指标</label><select id="chart-metric">${Object.entries(options).map(([k,v])=>`<option value="${k}" ${k===metric?'selected':''}>${v[0]}</option>`).join('')}</select>${!mine&&!fixedRound?`<button class="button small" id="chart-player-filter">筛选玩家</button>`:''}<button class="button small" id="enlarge-chart">放大</button></div><div id="chart-container"></div><p class="chart-note">长按图表可横向放大，曲线末尾为玩家昵称。横轴为所有有效历史战绩的统一场次序号。筛选保留原序号；累计指标未参赛时沿用上一值，首次参赛前不绘制；单场指标只标记实际参赛场次。</p>`;
-      $('#chart-metric').onchange=e=>{if(mine)state.personalMetric=e.target.value;else {state.metric=e.target.value;state.sort=state.metric;}drawChart(selected());};drawChart(shown);
-      if($('#chart-player-filter'))$('#chart-player-filter').onclick=()=>chartPlayerModal(players,redraw);
+      $('#chart-panel').innerHTML=(mine?`<div class="chart-metric-picker"><label for="chart-metric">走势指标</label><select id="chart-metric">${Object.entries(options).map(([k,v])=>`<option value="${k}" ${k===metric?'selected':''}>${v[0]}</option>`).join('')}</select><button class="button small" id="enlarge-chart">放大</button></div>`:metricTabs(options,metric,'走势指标'))+`<div id="chart-container"></div><p class="chart-note">${mine?'长按图表可横向放大。':''}曲线末尾为玩家昵称。横轴为所有有效历史战绩的统一场次序号；未参赛时累计统计沿用上一值，首次参赛前不绘制。净点棒相对实际起始点计算，不含 Uma / Oka。</p>`;
+      if(mine)$('#chart-metric').onchange=e=>{state.personalMetric=e.target.value;drawChart(selected());};
+      else bindMetricTabs(value=>{state.metric=value;state.sort=value;redraw();});
+      drawChart(shown);
     }else{
       shown.sort((a,b)=>state.sort==='average_rank'||state.sort==='last_rate'?a[state.sort]-b[state.sort]:b[state.sort]-a[state.sort]);
-      $('#table-panel').innerHTML=shown.length?`<div class="ranking-metric-picker"><label for="mobile-rank-metric">排名指标</label><select id="mobile-rank-metric">${Object.entries(metrics).map(([key,value])=>`<option value="${key}" ${key===state.sort?'selected':''}>${value[0]}</option>`).join('')}</select></div>`+mobileRanking(shown)+`<div class="desktop-ranking"><p class="chart-note ranking-sort-note">按${metrics[state.sort][0]}排序</p><div class="table-wrap"><table><thead><tr><th>排名 / 玩家</th><th>场数</th><th>累计成绩</th><th>平均成绩</th><th>平均顺位</th><th>一位率</th><th>连对率</th><th>四位率</th><th>平均点棒</th><th>最高 / 最低点棒</th></tr></thead><tbody>${shown.map((p,i)=>{const rank=i&&p[state.sort]===shown[i-1][state.sort]?shown.findIndex(x=>x[state.sort]===p[state.sort])+1:i+1;return `<tr><td><div class="player-cell"><span class="rank-number ${rank===1?'first':''}">${rank}</span><button class="text-link" data-view-player="${p.user_id}">${esc(p.nickname)}</button></div></td><td>${p.count}</td><td class="score ${cls(p.total)}">${signed(p.total)}</td><td class="${cls(p.average)}">${signed(p.average)}</td><td>${p.average_rank.toFixed(2)}</td><td>${p.first_rate}%</td><td>${p.top2_rate}%</td><td>${p.last_rate}%</td><td>${fmt(p.average_points)}</td><td>${fmt(p.best_points)} / ${fmt(p.worst_points)}</td></tr>`;}).join('')}</tbody></table></div><p class="chart-note">比例以各玩家有效参赛场数为分母。</p></div>`:'<div class="empty">该范围暂无符合筛选条件的玩家。</div>';
+      $('#table-panel').innerHTML=metricTabs(metrics,state.sort,'排名指标')+(shown.length?mobileRanking(shown)+`<div class="desktop-ranking"><p class="chart-note ranking-sort-note">按${metrics[state.sort][0]}排序</p><div class="table-wrap"><table><thead><tr><th>排名 / 玩家</th><th>场数</th><th>累计成绩</th><th>平均成绩</th><th>平均顺位</th><th>一位率</th><th>连对率</th><th>四位率</th><th>累计净点棒</th><th>平均净点棒</th><th>平均点棒</th><th>最高 / 最低点棒</th></tr></thead><tbody>${shown.map((p,i)=>{const rank=i&&p[state.sort]===shown[i-1][state.sort]?shown.findIndex(x=>x[state.sort]===p[state.sort])+1:i+1;return `<tr><td><div class="player-cell"><span class="rank-number ${rank===1?'first':''}">${rank}</span><button class="text-link" data-view-player="${p.user_id}">${esc(p.nickname)}</button></div></td><td>${p.count}</td><td class="score ${cls(p.total)}">${signed(p.total)}</td><td class="${cls(p.average)}">${signed(p.average)}</td><td>${p.average_rank.toFixed(2)}</td><td>${p.first_rate}%</td><td>${p.top2_rate}%</td><td>${p.last_rate}%</td><td>${signed(p.net_total)}</td><td>${signed(p.net_average)}</td><td>${fmt(p.average_points)}</td><td>${fmt(p.best_points)} / ${fmt(p.worst_points)}</td></tr>`;}).join('')}</tbody></table></div><p class="chart-note">比例以各玩家有效参赛场数为分母。</p></div>`:'<div class="empty">该范围暂无有效战绩。</div>');
       listen('[data-view-player]','click',e=>{state.viewUser=Number(e.currentTarget.dataset.viewPlayer);state.page='mine';state.recordPage=1;statsPage().catch(err=>toast(err.message));window.scrollTo(0,0);});
     }
     renderDistribution(shown);
-    if(!chart&&$('#mobile-rank-metric')){
-      $('#mobile-rank-metric').onchange=e=>{state.sort=e.target.value;state.metric=state.sort;redraw();};
+    if(!chart){
+      bindMetricTabs(value=>{state.sort=value;state.metric=value;redraw();});
       listen('[data-rank-user]','toggle',e=>{const id=Number(e.currentTarget.dataset.rankUser);if(e.currentTarget.open)state.expandedRankUsers.add(id);else state.expandedRankUsers.delete(id);});
     }
   };
   redraw();
-}
-
-function chartPlayerModal(players,redraw) {
-  const checked=new Set(players.filter(p=>state.selectedPlayers.has(p.user_id)).map(p=>p.user_id));
-  openModal('筛选玩家',`<p class="subtitle">选择综合走势图和顺位分布中展示的玩家。取消关闭不会改变当前选择。</p><div class="actions section-gap"><button class="button small" id="select-all-chart-players">全选</button><button class="button small" id="clear-chart-players">清空</button></div><div class="chart-player-options">${players.map(p=>`<label class="check-field"><input type="checkbox" data-popup-player="${p.user_id}" ${checked.has(p.user_id)?'checked':''}><span class="color-dot" style="background:${chartColor(state.stats.players.findIndex(x=>x.user_id===p.user_id))}"></span>${esc(p.nickname)}</label>`).join('')}</div><div class="form-footer"><button class="button primary" id="apply-chart-players">应用玩家筛选</button></div>`);
-  listen('[data-popup-player]','change',e=>{const id=Number(e.target.dataset.popupPlayer);if(e.target.checked)checked.add(id);else checked.delete(id);});
-  const fill=value=>{document.querySelectorAll('[data-popup-player]').forEach(input=>{input.checked=value;const id=Number(input.dataset.popupPlayer);if(value)checked.add(id);else checked.delete(id);});};
-  $('#select-all-chart-players').onclick=()=>fill(true);$('#clear-chart-players').onclick=()=>fill(false);
-  $('#apply-chart-players').onclick=()=>{for(const p of players){if(checked.has(p.user_id))state.selectedPlayers.add(p.user_id);else state.selectedPlayers.delete(p.user_id);}$('#modal').close();redraw();};
 }
 
 function renderDistribution(players) {
@@ -182,7 +185,7 @@ function drawChart(players) {
   $('#chart-container').innerHTML=chartSvg(players);
   const button=$('#enlarge-chart'),svg=$('#chart-container svg');
   if(button){button.disabled=!svg;button.onclick=()=>openChartViewer(players);}
-  if(svg)bindChartLongPress(svg,players);
+  if(svg&&state.page==='mine')bindChartLongPress(svg,players);
 }
 
 (async()=>{try{const d=await api('/me');state.user=d.user;state.csrf=d.csrf;await loadBasics();await navigate('stats');}catch{loginPage();}})();

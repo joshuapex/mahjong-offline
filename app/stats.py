@@ -95,11 +95,15 @@ def summary(c, rows, user_id=None, rule=None):
             a['worst_points'] = min(p['points'], a['worst_points'] if a['worst_points'] is not None else p['points'])
             n = a['count']
             net = p['points'] - json.loads(row['rules_json'])['starting']
+            a['net_total'] = a.get('net_total',0) + net
             a['performances'].append({**p, 'record_id':row['id'], 'global_index':history[row['id']], 'time':row['created_at'], 'net':net, 'round_number':row['round_number']})
             a['trend'].append({'record_id': row['id'], 'global_index': history[row['id']], 'time': row['created_at'], 'score':p['score'],'points':p['points'],'net':net,'game_rank':p['rank'],'total': a['total_tenths']/10, 'average': round(a['total_tenths']/10/n, 2), 'rank': round(a['rank_total']/n, 2), 'first_rate': round(a['ranks'][0]/n*100, 2), 'last_rate': round(a['ranks'][3]/n*100, 2), 'top2_rate': round(sum(a['ranks'][:2])/n*100, 2)})
+            a['trend'][-1].update(net_total=a['net_total'],net_average=round(a['net_total']/n,1),
+                                  average_points=round(a['points_total']/n,1),best_points=a['best_points'],worst_points=a['worst_points'])
     for a in aggregate.values():
         n = a['count']
         a.update(total=a['total_tenths']/10, average=round(a['total_tenths']/10/n, 2), average_rank=round(a['rank_total']/n, 2), average_points=round(a['points_total']/n, 1), first_rate=round(a['ranks'][0]/n*100, 2), last_rate=round(a['ranks'][3]/n*100, 2), top2_rate=round(sum(a['ranks'][:2])/n*100, 2))
+        a['net_average']=round(a['net_total']/n,1)
         del a['total_tenths']
         perf=a.pop('performances')
         def window(items):

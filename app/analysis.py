@@ -1,18 +1,27 @@
 """Anonymous evidence and instructions for interpretive score analysis."""
 from functools import lru_cache
 from pathlib import Path
+import hashlib
 
 ANALYSIS_VERSION = 3
 
 
-@lru_cache(maxsize=3)
-def analysis_prompt(scope):
+@lru_cache(maxsize=1)
+def default_prompts():
+    folder = Path(__file__).parent / 'prompts'
+    return {name:(folder / (name + '.md')).read_text(encoding='utf-8').strip()
+            for name in ['common','overall','round','player']}
+
+
+def analysis_prompt(scope, overrides=None):
     if scope not in ['overall', 'round', 'player']:
         raise ValueError('invalid analysis scope')
-    folder = Path(__file__).parent / 'prompts'
-    common = (folder / 'common.md').read_text(encoding='utf-8').strip()
-    focus = (folder / (scope + '.md')).read_text(encoding='utf-8').strip()
-    return common + '\n\n' + focus
+    prompts={**default_prompts(),**(overrides or {})}
+    return prompts['common'] + '\n\n' + prompts[scope]
+
+
+def prompt_fingerprint(prompt):
+    return hashlib.sha256((str(ANALYSIS_VERSION)+'\n'+prompt).encode()).hexdigest()
 
 
 def analysis_evidence(scope, snapshot):
