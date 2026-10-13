@@ -5,7 +5,7 @@ import zipfile
 root=Path(__file__).resolve().parent
 output=root/'dist';output.mkdir(exist_ok=True)
 archive=output/'mahjong-offline-nas.zip'
-files=['README.md','DESIGN.md','Dockerfile','compose.yaml','requirements.txt','requirements.lock','.env.example','.dockerignore','.gitignore','package.py','tests/test_app.py','tests/fixtures.py','tests/__init__.py']
+files=['README.md','DESIGN.md','Dockerfile','compose.yaml','compose.nas.yaml','deploy.sh','DEPLOY-NAS.md','requirements.txt','requirements.lock','.env.example','.dockerignore','.gitignore','package.py','tests/test_app.py','tests/test_container_entrypoint.py','tests/fixtures.py','tests/__init__.py']
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as bundle:
     for name in files:bundle.write(root/name,name)
     for folder in ['app','static']:

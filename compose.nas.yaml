@@ -1,0 +1,23 @@
+services:
+  mahjong:
+    build: .
+    image: mahjong-offline:1.0.0
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-18080}:8080"
+    environment:
+      TZ: Asia/Shanghai
+      APP_DB: /app/data/app.db
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      - mahjong-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  mahjong-data:
+    name: mahjong-offline-data

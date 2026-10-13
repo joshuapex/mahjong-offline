@@ -5,3 +5,4 @@ tests
 test-output
 __pycache__
 .env
+dist
