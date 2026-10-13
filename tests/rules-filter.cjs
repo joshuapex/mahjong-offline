@@ -1,0 +1,31 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const assert=require('node:assert/strict');
+(async()=>{
+ const browser=await chromium.launch({channel:'msedge',headless:true});
+ const page=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('http://127.0.0.1:8765');await page.getByLabel('登录账号',{exact:true}).fill('linjia');await page.getByLabel('密码',{exact:true}).fill('Preview-only-2026');
+ await page.getByRole('button',{name:'登录 →'}).click();await page.locator('#mobile-rank-metric').waitFor();
+ assert.equal(await page.locator('#open-filters,#rule-filter,#round-filter').count(),0);assert.equal(await page.locator('#round-wheel').evaluate(el=>el.scrollTop),0);assert((await page.locator('[data-round]').first().innerText()).includes('第 2 届排行榜'));assert.equal(await page.locator('#game-filter,#minimum-ranking').count(),0);
+ const before=await page.evaluate(()=>state.stats.players.map(p=>({id:p.user_id,total:p.total})));
+ await page.locator('.mobile-nav [data-nav="manage"]').click();await page.getByRole('button',{name:'计分规则',exact:true}).click();
+ await page.locator('#add-rule').click();await page.locator('#new-rule-name').fill('统一测试口径');await page.locator('#rule-return').fill('25000');await page.getByRole('button',{name:'保存规则',exact:true}).click();
+ await page.locator('[data-rule-default="2"]').waitFor();await page.locator('[data-rule-default="2"]').click();await page.waitForFunction(()=>state.ruleVersion==='2');
+ await page.locator('.mobile-nav [data-nav="stats"]').click();await page.waitForFunction(()=>state.stats?.scoring_rule.version===2);
+ assert.equal(await page.evaluate(()=>state.stats.count),11);assert(before.some(p=>p.total!==undefined));
+ const after=await page.evaluate(()=>state.stats.players);assert(before.some(p=>p.total!==after.find(x=>x.user_id===p.id).total));
+ assert((await page.locator('.rule-scope-note').innerText()).includes('统一测试口径'));
+ await page.locator('[data-round]').first().click();await page.waitForFunction(()=>state.tab==='round'&&state.stats.count===5);await page.locator('#round-wheel').evaluate(el=>{el.scrollTop=44;});await page.waitForFunction(()=>state.stats.count===6);
+ assert.equal(await page.evaluate(()=>state.stats.scoring_rule.version),2);assert(await page.locator('#round-wheel').isVisible());
+ await page.locator('.mobile-nav [data-nav="mine"]').click();await page.locator('#coplayer-details').waitFor();assert.equal(await page.locator('#minimum-ranking,#round-filter,#rule-filter,#open-filters').count(),0);
+ assert.equal(await page.evaluate(()=>state.stats.scoring_rule.version),2);assert.equal(await page.locator('.coplayer-row').count(),4);
+ await page.locator('.coplayer-row').filter({hasText:'虚构玩家丁'}).locator('summary').click();
+ assert((await page.locator('#coplayer-details').innerText()).includes('同桌 6 场 / 未同桌 5 场'));
+ await page.locator('.coplayer-row').filter({hasText:'虚构玩家乙'}).locator('summary').click();assert((await page.locator('#coplayer-details').innerText()).includes('没有未同桌样本'));
+ for(const width of [320,390,1440]){await page.setViewportSize({width,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'test-output/coplayer-mobile.png',fullPage:true});
+ assert.equal(await page.locator('#game-filter,#minimum-ranking').count(),0);
+ await page.locator('.mobile-nav [data-nav="manage"]').click();await page.getByRole('button',{name:'计分规则',exact:true}).click();await page.locator('[data-rule-default="1"]').click();await page.waitForFunction(()=>state.ruleVersion==='1');
+ await page.locator('[data-rule-delete="2"]').click();await page.locator('#confirm-rule-delete').click();await page.waitForFunction(()=>state.ruleVersions.length===1);
+ await page.waitForFunction(()=>document.querySelector('[data-rule-delete="1"]')?.disabled);assert.deepEqual(errors,[]);await browser.close();console.log('Global default rule, round selector and co-player comparison at 320/390px passed.');
+})().catch(e=>{console.error(e);process.exit(1);});

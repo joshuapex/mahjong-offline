@@ -1,0 +1,23 @@
+.chart{touch-action:pan-y;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.chart:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.chart:focus:not(:focus-visible){outline:none}
+.chart text.chart-end-label{font-size:12px;font-weight:650;paint-order:stroke;stroke:var(--paper);stroke-width:3px;stroke-linejoin:round}
+.chart-expanded text.chart-end-label{font-size:14px}
+.chart-metric-picker #enlarge-chart{margin-left:auto;flex-shrink:0}
+.chart-viewer{position:fixed;inset:0;background:var(--paper);z-index:100;overflow:hidden}
+.chart-viewer:fullscreen{background:var(--paper)}
+.chart-viewer-stage{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--paper)}
+.chart-viewer-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px max(18px,env(safe-area-inset-right)) 12px max(18px,env(safe-area-inset-left));border-bottom:1px solid var(--line);flex-shrink:0}
+.chart-viewer-header h2{font-size:17px}
+.chart-viewer-header p{font-size:11px;color:var(--muted);margin-top:5px}
+.chart-viewer-header button{min-height:44px}
+.chart-viewer-plot{flex:1;min-height:0;overflow:auto;padding:12px 16px max(12px,env(safe-area-inset-bottom))}
+.chart-viewer .chart{width:100%;height:100%;min-height:220px;overflow:visible}
+.chart-viewer .chart text{font-size:12px}
+@media(orientation:portrait) and (max-width:700px){
+  .chart-viewer-stage{inset:auto;left:50%;top:50%;width:100dvh;height:100dvw;transform:translate(-50%,-50%) rotate(90deg)}
+  .chart-viewer-header{padding:10px 16px}
+  .chart-viewer-header h2{font-size:15px}
+  .chart-viewer-header p{font-size:10px}
+  .chart-viewer-plot{padding:8px 16px}
+}
