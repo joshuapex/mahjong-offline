@@ -23,7 +23,7 @@ function ruleModal(rule,base) {
 }
 
 function rankingTabs() {
-  return `<div class="ranking-tabs"><button class="overall-tab ${state.tab==='overall'?'active':''}" data-tab="overall">综合排行榜</button><div class="round-wheel-wrap ${state.tab==='round'?'active':''}"><div id="round-wheel" role="listbox" aria-label="届次滚轮" tabindex="0">${state.rounds.length?state.rounds.map((r,i)=>`<button type="button" role="option" aria-selected="${state.tab==='round'&&r.id===state.round}" tabindex="-1" data-round="${r.id}"><span class="round-wheel-title">第 ${r.number} 届排行榜</span>${i===0?'<small>最新</small>':''}</button>`).join(''):'<span class="round-wheel-empty">暂无届次</span>'}</div><span class="round-wheel-hint" aria-hidden="true">↕</span></div></div>`;
+  return `<div class="ranking-tabs"><button class="overall-tab ${state.tab==='overall'?'active':''}" data-tab="overall">综合排行榜</button><div class="round-wheel-wrap ${state.tab==='round'?'active':''}"><div id="round-wheel" role="listbox" aria-label="届次滚轮" tabindex="0">${state.rounds.length?state.rounds.map((r,i)=>`<button type="button" role="option" aria-selected="${state.tab==='round'&&r.id===state.round}" tabindex="-1" data-round="${r.id}"><span class="round-wheel-title">第 ${r.number} 届排行榜</span>${i===0?'<small>最新</small>':''}</button>`).join(''):'<span class="round-wheel-empty">暂无届次</span>'}</div></div></div>`;
 }
 
 function bindRoundWheel() {

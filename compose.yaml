@@ -1,7 +1,7 @@
 services:
   mahjong:
     build: .
-    image: mahjong-offline:1.0.0
+    image: mahjong-offline:1.0.4
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:8080"
@@ -11,6 +11,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      LLM_PROXY_URL: ${LLM_PROXY_URL:-}
     volumes:
       - ./data:/app/data
     logging:

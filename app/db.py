@@ -85,7 +85,7 @@ def init_db():
         ''')
         for table, additions in {
             'users': {'active': 'INTEGER NOT NULL DEFAULT 1', 'can_record': 'INTEGER NOT NULL DEFAULT 0', 'legacy_username': 'TEXT'},
-            'analyses': {'rule_id': 'INTEGER NOT NULL DEFAULT 1', 'rule_json': 'TEXT'},
+            'analyses': {'rule_id': 'INTEGER NOT NULL DEFAULT 1', 'rule_json': 'TEXT', 'analysis_version': 'INTEGER NOT NULL DEFAULT 1'},
             'records': {'status': "TEXT NOT NULL DEFAULT 'active'", 'submitted_at': 'TEXT', 'updated_at': 'TEXT', 'round_id': 'INTEGER REFERENCES rounds(id)', 'rules_json': 'TEXT', 'game_type': "TEXT NOT NULL DEFAULT 'hanchan'"},
         }.items():
             existing = {r['name'] for r in c.execute(f'PRAGMA table_info({table})')}

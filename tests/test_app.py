@@ -8,6 +8,7 @@ from contextlib import closing
 from unittest.mock import patch
 
 import bcrypt
+import httpx
 from fastapi.testclient import TestClient
 from app import db as storage
 from app import main
@@ -152,7 +153,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/stats').json()['count'],11)
 
     def test_llm_key_is_write_only(self):
-        cfg={'base_url':'https://example.com/v1','model':'test-model','api_key':'very-private-key'}
+        cfg={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'very-private-key'}
         self.assertEqual(self.client.put('/api/admin/llm',json=cfg).status_code,200)
         self.assertNotIn('very-private-key',self.client.get('/api/admin/llm').text)
         self.assertNotIn('very-private-key',self.client.get('/api/admin/audit').text)
@@ -163,7 +164,7 @@ class AppTests(unittest.TestCase):
         with storage.db() as c:
             snap=main.analysis_scope(c,'overall',0)
             storage.set_setting(c,'llm',{'base_url':'https://example.com/v1','model':'test','api_key':'private'})
-            c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at) VALUES('overall',0,?,'统计总结','test',?)",(snap['data_hash'],storage.now()))
+            c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,analysis_version) VALUES('overall',0,?,'统计总结','test',?,3)",(snap['data_hash'],storage.now()))
             c.execute("INSERT INTO jobs(id,status,created_at) VALUES('busy','running',?)",(storage.now(),))
         self.assertFalse(self.client.get('/api/analysis').json()['analysis']['stale'])
         self.assertEqual(self.client.post('/api/analysis',json={'scope':'overall'}).status_code,409)
@@ -183,6 +184,166 @@ class AppTests(unittest.TestCase):
             for nickname in ['虚构玩家甲','虚构玩家乙','虚构玩家丙','虚构玩家丁','虚构玩家戊']: self.assertNotIn(nickname,prompt)
             self.assertIn('[[player:2]]',prompt)
         self.assertEqual(self.client.get('/api/jobs/fake').json()['status'],'done')
+
+    def test_analysis_evidence_decomposes_actual_scores_without_names(self):
+        with storage.db() as c:snapshot=main.analysis_scope(c,'overall',0)
+        evidence=main.analysis_evidence('overall',snapshot)
+        for player in evidence['players']:
+            self.assertAlmostEqual(sum(player['score_components'].values()),player['total'])
+            self.assertAlmostEqual(sum(row['total_pt'] for row in player['rank_outcomes']),player['total'])
+            self.assertEqual([row['count'] for row in player['rank_outcomes']],player['ranks'])
+            self.assertLessEqual(len(player['recent_trend']),20)
+        encoded=json.dumps(evidence,ensure_ascii=False)
+        for player in snapshot['players']:self.assertNotIn(player['nickname'],encoded)
+        prompts=[main.analysis_prompt(scope) for scope in ['overall','round','player']]
+        self.assertEqual(len(set(prompts)),3)
+
+    def test_legacy_analysis_is_marked_for_new_interpretation(self):
+        with storage.db() as c:
+            snapshot=main.analysis_scope(c,'overall',0)
+            c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at) VALUES('overall',0,?,'旧解读','test',?)",(snapshot['data_hash'],storage.now()))
+        analysis=self.client.get('/api/analysis').json()['analysis']
+        self.assertTrue(analysis['style_outdated'])
+        self.assertTrue(analysis['stale'])
+
+    def test_approved_prompts_are_packaged_and_scope_specific(self):
+        common=main.analysis_prompt('overall')
+        self.assertIn('scoring_rule.starting',common)
+        self.assertIn('累计 Oka',common)
+        self.assertIn('整体分析',common)
+        self.assertIn('个人范围 `players` 中只有目标玩家',main.analysis_prompt('player'))
+        self.assertIn('只描述本届',main.analysis_prompt('round'))
+        for scope in ['overall','round','player']:
+            self.assertNotIn('{{',main.analysis_prompt(scope))
+        with self.assertRaises(ValueError):main.analysis_prompt('../common')
+
+    def test_deepseek_test_uses_unsaved_form_without_saving_key(self):
+        saved={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'saved-secret'}
+        self.client.put('/api/admin/llm',json=saved)
+        with patch('app.main.httpx.Client') as fake:
+            provider=fake.return_value.__enter__.return_value
+            provider.post.return_value.json.return_value={'choices':[{'message':{'content':'OK'}}]}
+            result=self.client.post('/api/admin/llm/test',json={**saved,'model':'deepseek-v4-pro','api_key':''})
+            self.assertEqual(result.status_code,200)
+            call=provider.post.call_args
+            self.assertEqual(call.args[0],'https://api.deepseek.com/chat/completions')
+            self.assertEqual(call.kwargs['headers']['Authorization'],'Bearer saved-secret')
+            self.assertEqual(call.kwargs['json']['thinking'],{'type':'disabled'})
+            self.assertEqual(call.kwargs['json']['model'],'deepseek-v4-pro')
+        self.assertEqual(self.client.get('/api/admin/llm').json()['model'],'deepseek-flash')
+        with storage.db() as c:self.assertEqual(storage.setting(c,'llm')['api_key'],'saved-secret')
+
+    def test_deepseek_validation_and_test_error_do_not_expose_secrets(self):
+        cfg={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'sensitive-secret'}
+        for invalid in [{**cfg,'base_url':'https://example.com'},{**cfg,'model':'unknown'}]:
+            self.assertEqual(self.client.put('/api/admin/llm',json=invalid).status_code,422)
+        self.assertEqual(self.client.post('/api/admin/llm/test',json={**cfg,'api_key':''}).status_code,422)
+        with patch('app.main.httpx.Client') as fake:
+            request=httpx.Request('POST','https://api.deepseek.com/chat/completions',headers={'Authorization':'Bearer sensitive-secret'})
+            response=httpx.Response(401,request=request,text='sensitive-secret')
+            fake.return_value.__enter__.return_value.post.side_effect=httpx.HTTPStatusError('sensitive-secret',request=request,response=response)
+            result=self.client.post('/api/admin/llm/test',json=cfg)
+            self.assertEqual(result.status_code,502)
+            self.assertIn('401',result.text)
+            self.assertNotIn('sensitive-secret',result.text)
+
+    def test_deepseek_analysis_disables_thinking_and_explains_empty_output(self):
+        with storage.db() as c:
+            snap=main.analysis_scope(c,'player',1)
+            c.execute("INSERT INTO jobs(id,status,created_at) VALUES('empty','running',?)",(storage.now(),))
+        with patch('app.main.httpx.Client') as fake:
+            provider=fake.return_value.__enter__.return_value
+            provider.post.return_value.json.return_value={'choices':[{'finish_reason':'length','message':{'content':''}}]}
+            main.run_analysis('empty','player',1,{'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'secret'},snap)
+            self.assertEqual(provider.post.call_args.kwargs['json']['thinking'],{'type':'disabled'})
+        job=self.client.get('/api/jobs/empty').json()
+        self.assertEqual(job['status'],'failed')
+        self.assertIn('token',job['error'])
+
+    def test_llm_network_errors_and_explicit_proxy(self):
+        for status,hint in [(401,'密钥'),(402,'余额'),(404,'模型'),(429,'限流'),(503,'服务异常')]:
+            with self.subTest(status=status):
+                request=httpx.Request('POST','https://api.deepseek.com/chat/completions')
+                error=httpx.HTTPStatusError('secret',request=request,response=httpx.Response(status,request=request))
+                self.assertIn(hint,main.llm_failure_message(error))
+                self.assertNotIn('secret',main.llm_failure_message(error))
+        self.assertIn('超时',main.llm_failure_message(httpx.ReadTimeout('secret')))
+        self.assertIn('网络',main.llm_failure_message(httpx.ConnectError('secret')))
+        with patch.dict(main.os.environ,{'LLM_PROXY_URL':'http://192.168.1.10:7890'}),patch('app.main.httpx.Client') as fake:
+            main.llm_client()
+            self.assertEqual(fake.call_args.kwargs['proxy'],'http://192.168.1.10:7890')
+            self.assertFalse(fake.call_args.kwargs['trust_env'])
+
+    def test_deepseek_thinking_configuration_drives_analysis(self):
+        cfg={'base_url':'https://api.deepseek.com','model':'deepseek-flash','api_key':'secret',
+             'thinking':True,'reasoning_effort':'low'}
+        self.assertEqual(self.client.put('/api/admin/llm',json=cfg).status_code,200)
+        saved=self.client.get('/api/admin/llm').json()
+        self.assertTrue(saved['thinking'])
+        self.assertEqual(saved['reasoning_effort'],'low')
+        self.assertEqual(self.client.put('/api/admin/llm',json={**cfg,'reasoning_effort':'invalid'}).status_code,422)
+        with storage.db() as c:
+            snap=main.analysis_scope(c,'player',1)
+            c.execute("INSERT INTO jobs(id,status,created_at) VALUES('thinking','running',?)",(storage.now(),))
+        with patch('app.main.httpx.Client') as fake:
+            fake.return_value.__enter__.return_value.post.return_value.json.return_value={'choices':[{'message':{'content':'样本有限'}}]}
+            main.run_analysis('thinking','player',1,cfg,snap)
+            payload=fake.return_value.__enter__.return_value.post.call_args.kwargs['json']
+            self.assertEqual(payload['thinking'],{'type':'enabled'})
+            self.assertEqual(payload['reasoning_effort'],'low')
+            self.assertEqual(payload['max_tokens'],16384)
+        self.assertEqual(self.client.get('/api/jobs/thinking').json()['status'],'done')
+
+    def test_version_and_assets_are_not_cached(self):
+        health=self.client.get('/health')
+        self.assertEqual(health.json()['version'],'1.0.4')
+        for path in ['/','/health','/static/app.js']:
+            response=self.client.get(path)
+            self.assertEqual(response.headers['cache-control'],'no-store')
+            self.assertEqual(response.headers['x-app-version'],'1.0.4')
+        self.assertIn('/static/app.js?v=1.0.4',self.client.get('/').text)
+
+    def test_public_ip_fallback_rejects_private_and_ipv6(self):
+        def response(value):
+            return type('IPResponse',(),{'text':value,'raise_for_status':lambda self:None})()
+        with patch('app.main.httpx.Client') as fake:
+            fake.return_value.__enter__.return_value.get.side_effect=[response('192.168.1.1'),response('2606:4700:4700::1111'),response('8.8.8.8')]
+            result=self.client.post('/api/admin/public-ip')
+            self.assertEqual(result.status_code,200)
+            self.assertEqual(result.json()['ip'],'8.8.8.8')
+            self.assertFalse(fake.call_args.kwargs['trust_env'])
+        with patch('app.main.httpx.Client') as fake:
+            fake.return_value.__enter__.return_value.get.side_effect=httpx.ConnectTimeout('secret')
+            result=self.client.post('/api/admin/public-ip')
+            self.assertEqual(result.status_code,502)
+            self.assertIn('超时',result.json()['detail'])
+            self.assertNotIn('secret',result.text)
+
+    def test_public_ip_parses_json_jsonp_and_nested_json_safely(self):
+        samples=['8.8.8.8\n',json.dumps({'ip':'8.8.8.8','loc':'not stored'}),
+                 'if(window.IPCallBack) {IPCallBack({"ip":"8.8.8.8","err":""});}',
+                 json.dumps({'ret':200,'data':{'ip':'8.8.8.8','city':'not stored'}})]
+        for text in samples:
+            with self.subTest(text=text):self.assertEqual(main.parse_public_ipv4(text),'8.8.8.8')
+        invalid=['192.168.1.1','2606:4700:4700::1111','<html>8.8.8.8</html>',
+                 '{"ret":500,"data":{"ip":"8.8.8.8"}}','{"ip":123}',
+                 'IPCallBack({"ip":"8.8.8.8"}); malicious();','{"error":"not authorized"}']
+        for text in invalid:
+            with self.subTest(text=text),self.assertRaises((ValueError,TypeError)):main.parse_public_ipv4(text)
+
+    def test_public_ip_domestic_fallback_only_returns_ip_and_source(self):
+        def response(value):
+            return type('IPResponse',(),{'text':value,'raise_for_status':lambda self:None})()
+        with patch('app.main.httpx.Client') as fake:
+            provider=fake.return_value.__enter__.return_value
+            provider.get.side_effect=[httpx.ConnectTimeout('secret'),response('{"ret":200,"data":{"ip":"8.8.8.8","loc":"private-location"}}')]
+            result=self.client.post('/api/admin/public-ip')
+            self.assertEqual(result.status_code,200)
+            self.assertEqual(result.json()['source'],'ip9.com.cn')
+            self.assertEqual(result.json()['ip'],'8.8.8.8')
+            self.assertNotIn('private-location',result.text)
+            self.assertEqual(provider.get.call_args_list[0].args[0],'https://whois.pconline.com.cn/ipJson.jsp')
+        with storage.db() as c:self.assertNotIn('loc',storage.setting(c,'last_ip'))
 
     def test_import_preview_atomic_and_duplicate(self):
         text='ended_at,east_user_id,south_user_id,west_user_id,north_user_id,east_score,south_score,west_score,north_score\n2026-10-06 20:00:00,1,2,3,4,40000,30000,20000,10000\n'
@@ -314,7 +475,7 @@ class AppTests(unittest.TestCase):
     def test_analysis_is_bound_to_rule_and_parameters(self):
         with storage.db() as c:
             snapshot=main.analysis_scope(c,'overall',0)
-            c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json) VALUES('overall',0,?,'测试解读','test',?,1,?)",(snapshot['data_hash'],storage.now(),json.dumps(snapshot['scoring_rule'])))
+            c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json,analysis_version) VALUES('overall',0,?,'测试解读','test',?,1,?,3)",(snapshot['data_hash'],storage.now(),json.dumps(snapshot['scoring_rule'])))
         self.assertFalse(self.client.get('/api/analysis?rule_id=1').json()['analysis']['stale'])
         other={'name':'另一个口径','starting':25000,'returning':25000,'uma':[15,5,-5,-15]}
         self.client.post('/api/admin/rules',json=other)

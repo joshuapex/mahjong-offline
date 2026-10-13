@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Literal
 
 import bcrypt
 import httpx
@@ -23,6 +24,9 @@ from pydantic import BaseModel, Field
 
 from .db import ROOT, DB_PATH, TZ, RULE, db, init_db, now, setting, set_setting, audit, group_rows, regroup, rule_catalog, scoring_rule
 from .stats import SEATS, records, summary, settle
+from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence
+
+APP_VERSION='1.0.4'
 
 
 @asynccontextmanager
@@ -42,7 +46,8 @@ async def security_headers(request: Request, call_next):
     response.headers['Referrer-Policy'] = 'same-origin'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
-    if request.url.path.startswith('/api/'):
+    response.headers['X-App-Version']=APP_VERSION
+    if request.url.path.startswith(('/api/','/static/')) or request.url.path in ['/','/health']:
         response.headers['Cache-Control'] = 'no-store'
     return response
 
@@ -88,7 +93,7 @@ def password_hash(password):
 
 @app.get('/health')
 def health():
-    return {'status':'ok'}
+    return {'status':'ok','version':APP_VERSION}
 
 
 @app.post('/api/login')
@@ -448,10 +453,12 @@ def audit_list(u=Depends(admin)):
 
 
 class LLMSettings(BaseModel):
-    base_url:str = Field(max_length=300)
+    base_url:str = Field(default='https://api.deepseek.com',max_length=300)
     model:str = Field(min_length=1,max_length=150)
     api_key:str = Field(default='',max_length=500)
     clear_key:bool = False
+    thinking:bool = False
+    reasoning_effort:Literal['low','high','max'] = 'high'
 
 
 def validated_base(url):
@@ -461,22 +468,59 @@ def validated_base(url):
     return url.rstrip('/')
 
 
+def deepseek_config(data,old):
+    base=validated_base(data.base_url)
+    if base not in ['https://api.deepseek.com','https://api.deepseek.com/v1']:
+        raise HTTPException(422,'当前仅支持 DeepSeek 官方接口 https://api.deepseek.com')
+    model=data.model.strip()
+    if model not in ['deepseek-flash','deepseek-v4-pro']:
+        raise HTTPException(422,'请选择支持的 DeepSeek 模型')
+    return {'base_url':'https://api.deepseek.com','model':model,'thinking':data.thinking,'reasoning_effort':data.reasoning_effort,
+            'api_key':('' if data.clear_key else data.api_key.strip() or old.get('api_key',''))}
+
+
+def llm_client():
+    proxy=os.environ.get('LLM_PROXY_URL','').strip() or None
+    if proxy and urlparse(proxy).scheme not in ['http','https']:
+        raise HTTPException(422,'LLM_PROXY_URL 须为 HTTP/HTTPS 代理地址')
+    return httpx.Client(timeout=httpx.Timeout(300,connect=15),follow_redirects=False,trust_env=False,proxy=proxy)
+
+
 @app.get('/api/admin/llm')
 def llm_settings(u=Depends(admin)):
     with db() as c:
         cfg=setting(c,'llm',{})
-        return {'base_url':cfg.get('base_url',''),'model':cfg.get('model',''),'has_key':bool(cfg.get('api_key'))}
+        return {'base_url':cfg.get('base_url',''),'model':cfg.get('model',''),'has_key':bool(cfg.get('api_key')),
+                'thinking':cfg.get('thinking',False),'reasoning_effort':cfg.get('reasoning_effort','high')}
 
 
 @app.put('/api/admin/llm')
 def llm_save(data:LLMSettings,u=Depends(admin)):
-    base=validated_base(data.base_url)
     with db() as c:
         old=setting(c,'llm',{})
-        cfg={'base_url':base,'model':data.model.strip(),'api_key':('' if data.clear_key else data.api_key or old.get('api_key',''))}
+        cfg=deepseek_config(data,old)
         set_setting(c,'llm',cfg)
-        audit(c,u['id'],'llm_config','llm',after={'base_url':base,'model':cfg['model'],'has_key':bool(cfg['api_key'])})
+        audit(c,u['id'],'llm_config','llm',after={'base_url':cfg['base_url'],'model':cfg['model'],'has_key':bool(cfg['api_key']),
+                                              'thinking':cfg['thinking'],'reasoning_effort':cfg['reasoning_effort']})
     return {'ok':True}
+
+
+@app.post('/api/admin/llm/test')
+def llm_test(data:LLMSettings,u=Depends(admin)):
+    with db() as c: cfg=deepseek_config(data,setting(c,'llm',{}))
+    if not cfg['api_key']: raise HTTPException(422,'请填写 API 密钥或先保存密钥')
+    try:
+        with llm_client() as client:
+            response=client.post(cfg['base_url']+'/chat/completions',headers={'Authorization':'Bearer '+cfg['api_key']},
+                                 json={'model':cfg['model'],'messages':[{'role':'user','content':'请只回复 OK'}],
+                                       'thinking':{'type':'disabled'},'max_tokens':16,'stream':False})
+            response.raise_for_status()
+            content=response.json()['choices'][0]['message']['content']
+            if not isinstance(content,str) or not content.strip():
+                raise HTTPException(502,'DeepSeek 返回空正文，连接测试未通过')
+    except HTTPException: raise
+    except Exception as error: raise HTTPException(502,llm_failure_message(error)) from None
+    return {'ok':True,'message':'DeepSeek 基础连接测试通过，密钥和所选模型可用。测试使用非思考模式；请保存配置后生成分析'}
 
 
 def replace_names(text,c):
@@ -492,29 +536,57 @@ def analysis_scope(c,scope,target):
     return summary(c,records(c,round_id=target if scope=='round' else None,user_id=target if scope=='player' else None),target if scope=='player' else None,scoring_rule(c))
 
 
+def llm_failure_message(error):
+    # Never expose exception text or provider response bodies: they may contain secrets.
+    if isinstance(error,HTTPException): return error.detail
+    if isinstance(error,httpx.HTTPStatusError):
+        status=error.response.status_code
+        hint={400:'请求参数不被接受，请检查模型和接口兼容性',401:'API 密钥无效或已过期',
+              402:'API 账户余额不足',403:'API 访问被拒绝，请检查密钥权限',
+              404:'接口或模型不存在，请检查基础地址和模型 ID',
+              422:'请求参数不被接受，请检查模型和接口兼容性',
+              429:'请求限流或额度不足，请稍后重试并检查额度'}.get(status,
+              '供应商服务异常，请稍后重试' if status>=500 else '供应商拒绝请求，请检查 API 配置')
+        return f'AI 调用失败（HTTP {status}）：{hint}'
+    if isinstance(error,httpx.TimeoutException):
+        return 'AI 请求超时，请检查 NAS 容器出站网络或稍后重试'
+    if isinstance(error,httpx.ProxyError):
+        return 'AI 代理连接失败，请检查 LLM_PROXY_URL 配置及代理服务'
+    if isinstance(error,httpx.RequestError):
+        return 'AI 网络连接失败，请检查 NAS 容器的 DNS、HTTPS 出站网络及代理配置'
+    if isinstance(error,(KeyError,IndexError,TypeError,json.JSONDecodeError)):
+        return 'AI 返回格式不兼容，需要 Chat Completions 的 choices[0].message.content'
+    return 'AI 分析处理失败，请检查服务运行状态后重试'
+
+
 def run_analysis(jobid,scope,target,cfg,snapshot):
     try:
-        compact={'scope':scope,'games':snapshot['count'],'scoring_rule':snapshot['scoring_rule'],'players':[]}
-        for p in snapshot['players']:
-            item={k:v for k,v in p.items() if k not in ['nickname','trend']}
-            if 'co_players' in item.get('details',{}):
-                item['details']={**item['details'],'co_players':[{**{k:v for k,v in peer.items() if k!='nickname'},'player':'[[player:'+str(peer['user_id'])+']]'} for peer in item['details']['co_players']]}
-            item['player']='[[player:'+str(p['user_id'])+']]'
-            item['recent_trend']=p['trend'][-20:]
-            compact['players'].append(item)
-        prompt='你是线下四人日麻成绩分析员。只用提供的统计事实，中文输出，400字以内。按总体表现、近期变化、样本限制三部分写。玩家必须使用给定的 [[player:ID]] 标记，不创造名字。不得推断和牌率、放铳率、立直率、具体打法或因果。同桌比较只描述相关差异；无未同桌样本时不可作差异结论，其他同桌成员和时段可能不同。不得将不同长度的样本当作确定实力结论。无数据时明确说明。不要使用HTML。'
-        with httpx.Client(timeout=httpx.Timeout(120,connect=15),follow_redirects=False,trust_env=False) as client:
-            res=client.post(cfg['base_url']+'/chat/completions',headers={'Authorization':'Bearer '+cfg['api_key']},json={'model':cfg['model'],'messages':[{'role':'system','content':prompt},{'role':'user','content':json.dumps(compact,ensure_ascii=False)}],'max_tokens':1600})
+        compact=analysis_evidence(scope,snapshot)
+        payload={'model':cfg['model'],'messages':[{'role':'system','content':analysis_prompt(scope)},{'role':'user','content':json.dumps(compact,ensure_ascii=False)}],'max_tokens':4096}
+        if urlparse(cfg['base_url']).hostname=='api.deepseek.com':
+            thinking=cfg.get('thinking',False)
+            payload['thinking']={'type':'enabled' if thinking else 'disabled'}
+            if thinking:
+                payload['reasoning_effort']=cfg.get('reasoning_effort','high')
+                payload['max_tokens']=16384
+        with llm_client() as client:
+            res=client.post(cfg['base_url']+'/chat/completions',headers={'Authorization':'Bearer '+cfg['api_key']},json=payload)
             res.raise_for_status()
-            content=res.json()['choices'][0]['message']['content']
-            if not isinstance(content,str) or not content.strip(): raise ValueError('empty model response')
+            choice=res.json()['choices'][0]
+            content=choice['message']['content']
+            if content is None or (isinstance(content,str) and not content.strip()):
+                message='AI 输出达到 token 上限且没有正文，请换用非思考模型' if choice.get('finish_reason')=='length' else 'AI 返回空正文，请检查模型是否支持普通文字输出'
+                with db() as c:
+                    c.execute("UPDATE jobs SET status='failed',error=?,finished_at=? WHERE id=?",(message,now(),jobid))
+                return
+            if not isinstance(content,str): raise TypeError('invalid model content')
         with db() as c:
-            c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json) VALUES(?,?,?,?,?,?,?,?)',(scope,target,snapshot['data_hash'],content[:12000],cfg['model'],now(),snapshot['scoring_rule']['version'],json.dumps(snapshot['scoring_rule'])))
+            c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at,rule_id,rule_json,analysis_version) VALUES(?,?,?,?,?,?,?,?,?)',(scope,target,snapshot['data_hash'],content[:12000],cfg['model'],now(),snapshot['scoring_rule']['version'],json.dumps(snapshot['scoring_rule']),ANALYSIS_VERSION))
             c.execute("UPDATE jobs SET status='done',finished_at=? WHERE id=?",(now(),jobid))
-    except Exception:
+    except Exception as error:
         # Provider errors may contain authorization or request data; never expose them.
         with db() as c:
-            c.execute("UPDATE jobs SET status='failed',error='调用失败，请检查 API 配置、额度和网络后重试',finished_at=? WHERE id=?",(now(),jobid))
+            c.execute("UPDATE jobs SET status='failed',error=?,finished_at=? WHERE id=?",(llm_failure_message(error),now(),jobid))
 
 
 class AnalysisInput(BaseModel):
@@ -528,7 +600,9 @@ def analysis(scope:str='overall',target:int=0,u=Depends(auth)):
         data=analysis_scope(c,scope,target)
         row=c.execute('SELECT * FROM analyses WHERE scope=? AND target=? AND rule_id=? ORDER BY id DESC LIMIT 1',(scope,target,data['scoring_rule']['version'])).fetchone()
         if not row: return {'analysis':None}
-        item=dict(row); item['text']=replace_names(item.pop('payload'),c); item['stale']=item['data_hash']!=data['data_hash']
+        item=dict(row); item['text']=replace_names(item.pop('payload'),c)
+        item['style_outdated']=item['analysis_version']!=ANALYSIS_VERSION
+        item['stale']=item['data_hash']!=data['data_hash'] or item['style_outdated']
         return {'analysis':item}
 
 
@@ -645,22 +719,58 @@ def import_apply(data:ImportInput,u=Depends(admin)):
     return {'count':len(ids)}
 
 
+def parse_public_ipv4(text):
+    text=text.strip()
+    if text.startswith('{'):
+        data=json.loads(text)
+    elif 'IPCallBack' in text:
+        match=re.fullmatch(r'(?:if\s*\(\s*window\.IPCallBack\s*\)\s*\{\s*)?IPCallBack\s*\(\s*(\{.*\})\s*\)\s*;?\s*\}?',text,re.S)
+        if not match: raise ValueError('invalid JSONP')
+        data=json.loads(match.group(1))
+    else:
+        data=None
+    if data is not None:
+        if not isinstance(data,dict) or ('ret' in data and data['ret']!=200):
+            raise ValueError('invalid provider response')
+        if isinstance(data.get('data'),dict):
+            value=data['data'].get('ip')
+        else:
+            value=data.get('ip')
+    else:
+        value=text
+    if not isinstance(value,str): raise ValueError('missing IP')
+    ip=ipaddress.ip_address(value.strip())
+    if ip.version!=4 or not ip.is_global: raise ValueError('not a public IPv4')
+    return str(ip)
+
+
 @app.post('/api/admin/public-ip')
 def public_ip(u=Depends(admin)):
     detected=None
-    for endpoint in ['https://api.ipify.org','https://checkip.amazonaws.com']:
+    source=None
+    failures=[]
+    deadline=time.monotonic()+20
+    for endpoint in ['https://whois.pconline.com.cn/ipJson.jsp','https://ip9.com.cn/get',
+                     'https://ipinfo.io/json','https://4.ipw.cn','https://api.ipify.org','https://checkip.amazonaws.com']:
+        remaining=deadline-time.monotonic()
+        if remaining<=0: break
+        source=urlparse(endpoint).hostname
         try:
-            with httpx.Client(timeout=8,trust_env=False) as client:
+            # Query the NAS's own IPv4 egress, never a configured LLM proxy's IP.
+            with httpx.Client(timeout=httpx.Timeout(min(3,remaining),connect=min(2,remaining)),trust_env=False,
+                              transport=httpx.HTTPTransport(local_address='0.0.0.0',trust_env=False)) as client:
                 res=client.get(endpoint);res.raise_for_status()
-                ip=ipaddress.ip_address(res.text.strip())
-                if ip.version==4 and ip.is_global:
-                    detected=str(ip);break
-        except Exception: continue
-    if not detected: raise HTTPException(502,'公网 IP 查询失败，请检查 NAS 出站网络')
+                detected=parse_public_ipv4(res.text)
+                break
+        except httpx.TimeoutException: failures.append(source+'：连接超时')
+        except httpx.HTTPStatusError as error: failures.append(source+f'：HTTP {error.response.status_code}')
+        except httpx.RequestError: failures.append(source+'：DNS、TLS 或网络连接失败')
+        except (ValueError,TypeError): failures.append(source+'：未返回有效公网 IPv4')
+    if not detected: raise HTTPException(502,'公网 IPv4 查询失败：'+'、'.join(dict.fromkeys(failures))+'。请检查 NAS 容器出站网络；当前查询不代表外网可访问')
     with db() as c:
         cfg=setting(c,'access',{'protocol':'https','external_port':443,'public_host':''})
         previous=setting(c,'last_ip',{})
-        current={'ip':detected,'checked_at':now()}
+        current={'ip':detected,'checked_at':now(),'source':source}
         set_setting(c,'last_ip',current)
     host=cfg.get('public_host') or detected
     return {**current,'changed':bool(previous and previous['ip']!=detected),'url':f"{cfg['protocol']}://{host}:{cfg['external_port']}",'verified':False}
