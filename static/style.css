@@ -26,3 +26,6 @@ html{scrollbar-gutter:stable}.main:has(#stats-body){overflow-anchor:none}#stats-
 
 .personal-stats-layout{align-items:start}.personal-stats-layout>*{min-width:0}.personal-stats-left{display:grid;gap:20px;min-width:0}.personal-stats-left>.card{min-width:0}@media(max-width:700px){.personal-stats-left{gap:15px}}
 .public-stats-left .mobile-rank-heading,.public-stats-left .mobile-rank-row>summary{grid-template-columns:minmax(0,1fr) 100px 65px}
+
+.prompt-settings-layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:20px;align-items:start}.prompt-settings-layout>*{min-width:0}.prompt-reference .prompt-guide{margin-top:0;padding-top:0;border-top:0}.prompt-editor .notice{margin-bottom:0}.prompt-editor textarea{min-height:500px}@media(max-width:1100px){.prompt-settings-layout{grid-template-columns:minmax(0,1fr)}}@media(max-width:700px){.prompt-settings-layout{gap:15px}.prompt-editor textarea{min-height:360px}}
+@media(min-width:701px){.personal-stats-layout{grid-template-columns:minmax(0,1.5fr) minmax(220px,1fr)}}

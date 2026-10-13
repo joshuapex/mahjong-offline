@@ -142,8 +142,24 @@ class AppTests(unittest.TestCase):
             s=main.analysis_scope(c,'player',1)
             c.execute("INSERT INTO analyses(scope,target,data_hash,payload,model,created_at) VALUES('player',1,?,'[[player:1]] 有进步','test',?)",(s['data_hash'],storage.now()))
         self.assertEqual(self.client.put('/api/profile',json={'nickname':'新的昵称'}).status_code,200)
+        self.assertEqual('你 有进步',self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['text'])
+        self.login('linyi')
         self.assertIn('新的昵称',self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['text'])
         self.assertIn('新的昵称',self.client.get('/api/stats').text)
+
+    def test_personal_analysis_uses_you_only_for_authenticated_viewer(self):
+        with storage.db() as c:
+            for scope,target in [('player',1),('overall',0)]:
+                snapshot=main.analysis_scope(c,scope,target)
+                c.execute('INSERT INTO analyses(scope,target,data_hash,payload,model,created_at) VALUES(?,?,?,?,?,?)',
+                          (scope,target,snapshot['data_hash'],'[[player:1]] 与 [[player:2]] 比较','fake',storage.now()))
+        text=self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['text']
+        self.assertEqual(text,'你 与 虚构玩家乙 比较')
+        public=self.client.get('/api/analysis').json()['analysis']['text']
+        self.assertEqual(public,'虚构玩家甲 与 虚构玩家乙 比较')
+        self.login('linyi')
+        text=self.client.get('/api/analysis?scope=player&target=1').json()['analysis']['text']
+        self.assertEqual(text,'虚构玩家甲 与 你 比较')
 
     def test_last_admin_and_user_deletion(self):
         u=self.client.get('/api/users').json()[0]
@@ -359,12 +375,12 @@ class AppTests(unittest.TestCase):
 
     def test_version_and_assets_are_not_cached(self):
         health=self.client.get('/health')
-        self.assertEqual(health.json()['version'],'1.0.7')
+        self.assertEqual(health.json()['version'],'1.0.9')
         for path in ['/','/health','/static/app.js']:
             response=self.client.get(path)
             self.assertEqual(response.headers['cache-control'],'no-store')
-            self.assertEqual(response.headers['x-app-version'],'1.0.7')
-        self.assertIn('/static/app.js?v=1.0.7',self.client.get('/').text)
+            self.assertEqual(response.headers['x-app-version'],'1.0.9')
+        self.assertIn('/static/app.js?v=1.0.9',self.client.get('/').text)
 
     def test_public_ip_fallback_rejects_private_and_ipv6(self):
         def response(value):

@@ -1,7 +1,7 @@
 services:
   mahjong:
     build: .
-    image: mahjong-offline:1.0.7
+    image: mahjong-offline:1.0.9
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:8080"

@@ -15,15 +15,15 @@ function chartSvg(players,expanded=false,width=620,height=250) {
   for(const {player:p,values:list} of series){
     const color=chartColor(state.stats.players.findIndex(t=>t.user_id===p.user_id));
     svg+=`<polyline data-player="${p.user_id}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" points="${list.map(t=>x(t.global_index)+','+y(t.value)).join(' ')}"/>`;
-    for(const t of list)if(t.participated)svg+=`<circle data-player="${p.user_id}" data-global-index="${t.global_index}" cx="${x(t.global_index)}" cy="${y(t.value)}" r="4" fill="${color}" tabindex="0"><title>${esc(p.nickname)} · 历史第 ${t.global_index} 场 · ${esc(t.time)} · ${t.value}${unit}</title></circle>`;
+    for(const t of list)if(t.participated)svg+=`<circle data-player="${p.user_id}" data-global-index="${t.global_index}" cx="${x(t.global_index)}" cy="${y(t.value)}" r="4" fill="${color}" tabindex="0"><title>${esc(playerName(p))} · 历史第 ${t.global_index} 场 · ${esc(t.time)} · ${t.value}${unit}</title></circle>`;
     if(list.length){const end=list[list.length-1];labels.push({player:p,color,x:x(end.global_index),y:y(end.value),position:y(end.value)});}
   }
   labels.sort((a,b)=>a.y-b.y);
   labels.forEach((label,i)=>{label.position=Math.max(T,label.y,i?labels[i-1].position+gap:T);});
   if(labels.length&&labels[labels.length-1].position>H-B){labels[labels.length-1].position=H-B;for(let i=labels.length-2;i>=0;i--)labels[i].position=Math.min(labels[i].position,labels[i+1].position-gap);}
   for(const label of labels){
-    const labelX=W-R+12,font=expanded?14:12,textWidth=Array.from(label.player.nickname).reduce((n,c)=>n+(c.codePointAt(0)>255?font:font*.65),0),fit=textWidth>R-20?` textLength="${R-20}" lengthAdjust="spacingAndGlyphs"`:'';
-    svg+=`<path class="chart-label-connector" d="M ${label.x} ${label.y} L ${W-R+5} ${label.position} L ${labelX-3} ${label.position}" fill="none" stroke="${label.color}" stroke-width="1" opacity=".6"/><text class="chart-end-label" data-player="${label.player.user_id}" x="${labelX}" y="${label.position}" dominant-baseline="middle" style="fill:${label.color}"${fit}>${esc(label.player.nickname)}<title>${esc(label.player.nickname)}</title></text>`;
+    const labelX=W-R+12,font=expanded?14:12,textWidth=Array.from(playerName(label.player)).reduce((n,c)=>n+(c.codePointAt(0)>255?font:font*.65),0),fit=textWidth>R-20?` textLength="${R-20}" lengthAdjust="spacingAndGlyphs"`:'';
+    svg+=`<path class="chart-label-connector" d="M ${label.x} ${label.y} L ${W-R+5} ${label.position} L ${labelX-3} ${label.position}" fill="none" stroke="${label.color}" stroke-width="1" opacity=".6"/><text class="chart-end-label" data-player="${label.player.user_id}" x="${labelX}" y="${label.position}" dominant-baseline="middle" style="fill:${label.color}"${fit}>${esc(playerName(label.player))}<title>${esc(playerName(label.player))}</title></text>`;
   }
   return svg+'</svg>';
 }

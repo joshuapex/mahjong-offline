@@ -42,8 +42,8 @@ sh deploy.sh update  # 更新源码后构建并启动
 
 AI 失败会显示安全的分类提示，例如 HTTP 401（密钥）、402（余额）、404（接口或模型）、429（限流/额度）、网络超时或空正文，不显示供应商原始响应或密钥。保存配置不代表实际调用已通过。
 
-离线镜像更新：在电脑构建并导出后上传 NAS，执行 `docker load -i mahjong-image-1.0.7.tar`。旧 NAS 编排文件若仍使用 1.0.0，先把 `compose.nas.yaml` 的 `image` 改为 `mahjong-offline:1.0.7`，再执行 `docker compose -p mahjong-offline -f compose.nas.yaml up -d --no-build --pull never --force-recreate`。更新时保留原命名卷，不需要重新恢复数据库。不要执行 `deploy.sh`，它会触发构建。
+离线镜像更新：在电脑构建并导出后上传 NAS，执行 `docker load -i mahjong-image-1.0.9.tar`。旧 NAS 编排文件若仍使用 1.0.0，先把 `compose.nas.yaml` 的 `image` 改为 `mahjong-offline:1.0.9`，再执行 `docker compose -p mahjong-offline -f compose.nas.yaml up -d --no-build --pull never --force-recreate`。更新时保留原命名卷，不需要重新恢复数据库。不要执行 `deploy.sh`，它会触发构建。
 
-浏览器打开 `http://NAS局域网IP:18080/health`，响应应包含 `"version":"1.0.7"`。LLM 配置页也显示应用版本；静态资源携带版本号且不缓存。若页面仍旧，请强制刷新。公网 IP 按钮立即显示等待状态，失败信息保留在页面，25 秒后结束前端等待。
+浏览器打开 `http://NAS局域网IP:18080/health`，响应应包含 `"version":"1.0.9"`。LLM 配置页也显示应用版本；静态资源携带版本号且不缓存。若页面仍旧，请强制刷新。公网 IP 按钮立即显示等待状态，失败信息保留在页面，25 秒后结束前端等待。
 
 旧 `compose.yaml` 保留目录挂载方案；简化部署使用独立的 `compose.nas.yaml`，不会自动读取旧宿主机 `data/app.db`。已有旧部署请下载备份后使用 import 命令迁移，避免误认为数据消失。

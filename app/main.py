@@ -26,7 +26,7 @@ from .db import ROOT, DB_PATH, TZ, RULE, db, init_db, now, setting, set_setting,
 from .stats import SEATS, records, summary, settle
 from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence, default_prompts, prompt_fingerprint
 
-APP_VERSION='1.0.7'
+APP_VERSION='1.0.9'
 
 
 @asynccontextmanager
@@ -523,9 +523,9 @@ def llm_test(data:LLMSettings,u=Depends(admin)):
     return {'ok':True,'message':'DeepSeek 基础连接测试通过，密钥和所选模型可用。测试使用非思考模式；请保存配置后生成分析'}
 
 
-def replace_names(text,c):
+def replace_names(text,c,self_user_id=None):
     for r in c.execute('SELECT id,nickname,username FROM users ORDER BY id DESC'):
-        text=text.replace('[[player:'+str(r['id'])+']]',r['nickname'] or r['username'])
+        text=text.replace('[[player:'+str(r['id'])+']]', '你' if r['id']==self_user_id else r['nickname'] or r['username'])
     return text
 
 
@@ -638,7 +638,7 @@ def analysis(scope:str='overall',target:int=0,u=Depends(auth)):
         data=analysis_scope(c,scope,target)
         row=c.execute('SELECT * FROM analyses WHERE scope=? AND target=? AND rule_id=? ORDER BY id DESC LIMIT 1',(scope,target,data['scoring_rule']['version'])).fetchone()
         if not row: return {'analysis':None}
-        item=dict(row); item['text']=replace_names(item.pop('payload'),c)
+        item=dict(row); item['text']=replace_names(item.pop('payload'),c,u['id'] if scope=='player' else None)
         prompt=analysis_prompt(scope,setting(c,'analysis_prompts',{}).get('overrides',{}))
         prior_hash=item.get('prompt_hash') or prompt_fingerprint(analysis_prompt(scope))
         item['style_outdated']=item['analysis_version']!=ANALYSIS_VERSION or prior_hash!=prompt_fingerprint(prompt)
