@@ -7,7 +7,7 @@ const fmt = n => Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2});
 const signed = n => (n>0?'+':'')+fmt(n);
 const cls = n => n>=0?'positive':'negative';
 const seats=['east','south','west','north'], seatNames=['東','南','西','北'];
-const state={user:null,csrf:'',page:'stats',tab:'overall',round:0,view:'table',metric:'total',sort:'total',players:[],rounds:[],stats:null,recordPage:1,editId:null,submissionKey:null,settingsTab:'llm',poll:null,viewUser:null,ruleVersions:[],ruleVersion:''};
+const state={user:null,csrf:'',page:'stats',tab:'overall',round:0,view:'table',metric:'total',sort:'total',players:[],rounds:[],stats:null,recordPage:1,editId:null,submissionKey:null,settingsTab:'access',poll:null,viewUser:null,ruleVersions:[],ruleVersion:''};
 const playerName=p=>state.page==='mine'&&Number(p.user_id??p.id)===Number(state.user.id)?'你':p.nickname||p.username||'玩家';
 const canRecord=()=>state.user&&(state.user.role==='admin'||state.user.can_record);
 const isAdmin=()=>state.user?.role==='admin';
