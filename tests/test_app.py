@@ -375,12 +375,16 @@ class AppTests(unittest.TestCase):
 
     def test_version_and_assets_are_not_cached(self):
         health=self.client.get('/health')
-        self.assertEqual(health.json()['version'],'1.0.9')
+        self.assertEqual(health.json()['version'],main.APP_VERSION)
+        self.assertRegex(main.APP_VERSION,r'^\d{2}\.\d{4}\.[1-9]\d*$')
+        html=self.client.get('/').text
+        self.assertIn(f'<meta name="app-version" content="{main.APP_VERSION}">',html)
+        self.assertIn(f'/static/app.js?v={main.APP_VERSION}',html)
+        self.assertNotIn('__APP_VERSION__',html)
         for path in ['/','/health','/static/app.js']:
             response=self.client.get(path)
             self.assertEqual(response.headers['cache-control'],'no-store')
-            self.assertEqual(response.headers['x-app-version'],'1.0.9')
-        self.assertIn('/static/app.js?v=1.0.9',self.client.get('/').text)
+            self.assertEqual(response.headers['x-app-version'],main.APP_VERSION)
 
     def test_public_ip_fallback_rejects_private_and_ipv6(self):
         def response(value):
