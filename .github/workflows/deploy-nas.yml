@@ -1,0 +1,104 @@
+name: Deploy production to UGREEN NAS
+
+on:
+  push:
+    branches: [production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mahjong-production-nas
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'joshuapex/mahjong-offline'
+    runs-on: [self-hosted, Linux, X64, ugreen-nas]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPLOY_DIR: /volume1/docker/1panel/opt/1panel/docker/compose/mahjong-offline
+
+    steps:
+      - name: Checkout the pushed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check existing deployment
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          compose=(docker compose -p mahjong-offline -f compose.nas.yaml)
+          "${compose[@]}" config --quiet
+          cid=$("${compose[@]}" ps -q mahjong)
+          test -n "$cid"
+          test "$(docker inspect -f '{{.State.Running}}' "$cid")" = true
+          test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' "$cid")" = mahjong-offline-data
+          docker volume inspect mahjong-offline-data >/dev/null
+          image=$(docker inspect -f '{{.Config.Image}}' "$cid")
+          # This deployment intentionally supports the existing single-service compose.
+          test "$("${compose[@]}" config --services)" = mahjong
+          test "$("${compose[@]}" config --images)" = "$image"
+
+      - name: Build candidate image
+        run: |
+          set -euo pipefail
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" .
+
+      - name: Run Python tests without production data
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/tests,dst=/app/tests,readonly" \
+            "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            -m unittest discover -s tests -t . -v
+
+      - name: Back up database and update the existing service
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          compose=(docker compose -p mahjong-offline -f compose.nas.yaml)
+          cid=$("${compose[@]}" ps -q mahjong)
+          test -n "$cid"
+          test "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' "$cid")" = mahjong-offline-data
+          live_image=$(docker inspect -f '{{.Config.Image}}' "$cid")
+          test "$("${compose[@]}" config --images)" = "$live_image"
+          old_id=$(docker inspect -f '{{.Image}}' "$cid")
+          previous="mahjong-offline:before-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag "$old_id" "$previous"
+          backup="/app/data/backups/before-actions-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.db"
+          docker exec --user 10001:10001 "$cid" python -c '
+          import pathlib, sqlite3, sys
+          source = pathlib.Path("/app/data/app.db")
+          target = pathlib.Path(sys.argv[1])
+          if not source.is_file():
+              raise SystemExit("Production database is missing")
+          target.parent.mkdir(parents=True, exist_ok=True)
+          if target.exists():
+              raise SystemExit("Backup already exists")
+          with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as src:
+              with sqlite3.connect(target) as dst:
+                  src.backup(dst)
+                  if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                      raise SystemExit("Backup integrity check failed")
+          ' "$backup"
+          {
+            printf '### NAS deployment\n'
+            printf -- '- Commit: %s\n' "$GITHUB_SHA"
+            printf -- '- Previous image: %s\n' "$previous"
+            printf -- '- Database backup (inside data volume): %s\n' "$backup"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Keep the image reference used by the existing 1Panel compose.
+          # The immutable git/run tag above records which build was deployed.
+          docker tag "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$live_image"
+          "${compose[@]}" up -d --no-build --pull never --no-deps \
+            --force-recreate --wait --wait-timeout 180 mahjong
+          cid=$("${compose[@]}" ps -q mahjong)
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid")" = "$GITHUB_SHA"
+          printf '\nDeployment is healthy.\n' >> "$GITHUB_STEP_SUMMARY"
