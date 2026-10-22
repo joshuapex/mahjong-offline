@@ -3,17 +3,76 @@ name: Deploy production to UGREEN NAS
 on:
   push:
     branches: [production]
+  pull_request:
+    branches: [production]
 
 permissions:
   contents: read
 
 concurrency:
-  group: mahjong-production-nas
+  group: mahjong-production-nas-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     if: github.repository == 'joshuapex/mahjong-offline'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      image: ${{ steps.image.outputs.tag }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      checksum: ${{ steps.archive.outputs.checksum }}
+    steps:
+      - name: Checkout the pushed commit or PR merge commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Build candidate image
+        id: image
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" .
+
+          echo "tag=mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Run Python tests without production data
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/tests,dst=/app/tests,readonly" \
+            "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            -m unittest discover -s tests -t . -v
+
+
+      - name: Export tested image
+        id: archive
+        env:
+          CANDIDATE_IMAGE: ${{ steps.image.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mahjong-image"
+          docker save "$CANDIDATE_IMAGE" | gzip -1 > "$RUNNER_TEMP/mahjong-image/image.tar.gz"
+          checksum=$(sha256sum "$RUNNER_TEMP/mahjong-image/image.tar.gz")
+          echo "checksum=${checksum%% *}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tested image
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: mahjong-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mahjong-image/image.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production' && github.repository == 'joshuapex/mahjong-offline'
     runs-on: [self-hosted, Linux, X64, ugreen-nas]
     timeout-minutes: 45
     defaults:
@@ -21,13 +80,8 @@ jobs:
         shell: bash
     env:
       DEPLOY_DIR: /volume1/docker/1panel/opt/1panel/docker/compose/mahjong-offline
-
+      CANDIDATE_IMAGE: ${{ needs.build.outputs.image }}
     steps:
-      - name: Checkout the pushed commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
       - name: Check existing deployment
         run: |
           set -euo pipefail
@@ -44,19 +98,31 @@ jobs:
           test "$("${compose[@]}" config --services)" = mahjong
           test "$("${compose[@]}" config --images)" = "$image"
 
-      - name: Build candidate image
-        run: |
-          set -euo pipefail
-          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            -t "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" .
 
-      - name: Run Python tests without production data
+      - name: Prepare isolated download directory
+        id: download_dir
         run: |
           set -euo pipefail
-          docker run --rm --network none --entrypoint python \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/tests,dst=/app/tests,readonly" \
-            "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            -m unittest discover -s tests -t . -v
+          folder=$(mktemp -d "$RUNNER_TEMP/mahjong-image.XXXXXXXX")
+          echo "path=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Download tested image from this build
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ steps.download_dir.outputs.path }}
+
+      - name: Verify archive and import image
+        env:
+          DOWNLOAD_DIR: ${{ steps.download_dir.outputs.path }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          cd "$DOWNLOAD_DIR"
+          printf '%s  image.tar.gz\n' "$EXPECTED_SHA256" | sha256sum --check -
+          docker load --input image.tar.gz
+          test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$CANDIDATE_IMAGE")" = linux/amd64
+          test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CANDIDATE_IMAGE")" = "$GITHUB_SHA"
 
       - name: Back up database and update the existing service
         run: |
@@ -95,10 +161,23 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # Keep the image reference used by the existing 1Panel compose.
           # The immutable git/run tag above records which build was deployed.
-          docker tag "mahjong-offline:git-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$live_image"
+          docker tag "$CANDIDATE_IMAGE" "$live_image"
           "${compose[@]}" up -d --no-build --pull never --no-deps \
             --force-recreate --wait --wait-timeout 180 mahjong
           cid=$("${compose[@]}" ps -q mahjong)
           test "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = healthy
           test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid")" = "$GITHUB_SHA"
           printf '\nDeployment is healthy.\n' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove downloaded archive
+        if: always() && steps.download_dir.outputs.path != ''
+        env:
+          DOWNLOAD_DIR: ${{ steps.download_dir.outputs.path }}
+        run: |
+          set -euo pipefail
+          case "$DOWNLOAD_DIR" in
+            "$RUNNER_TEMP"/mahjong-image.*) ;;
+            *) echo "::error::Unexpected download directory"; exit 1 ;;
+          esac
+          rm -f -- "$DOWNLOAD_DIR/image.tar.gz"
+          rmdir -- "$DOWNLOAD_DIR"
