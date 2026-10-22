@@ -26,8 +26,7 @@ from .db import ROOT, DB_PATH, TZ, RULE, db, init_db, now, setting, set_setting,
 from .stats import SEATS, records, summary, settle
 from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence, default_prompts, prompt_fingerprint
 
-# YY.MMDD.N: Shanghai date and the commit's one-based sequence that day.
-APP_VERSION='26.1022.2'
+from .version import get_version
 
 
 @asynccontextmanager
@@ -47,7 +46,7 @@ async def security_headers(request: Request, call_next):
     response.headers['Referrer-Policy'] = 'same-origin'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
-    response.headers['X-App-Version']=APP_VERSION
+    response.headers['X-App-Version']=get_version()
     if request.url.path.startswith(('/api/','/static/')) or request.url.path in ['/','/health']:
         response.headers['Cache-Control'] = 'no-store'
     return response
@@ -94,7 +93,7 @@ def password_hash(password):
 
 @app.get('/health')
 def health():
-    return {'status':'ok','version':APP_VERSION}
+    return {'status':'ok','version':get_version()}
 
 
 @app.post('/api/login')
@@ -922,4 +921,4 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 @app.get('/')
 def index():
     html=(ROOT/'static/index.html').read_text(encoding='utf-8')
-    return HTMLResponse(html.replace('__APP_VERSION__',APP_VERSION))
+    return HTMLResponse(html.replace('__APP_VERSION__',get_version()))
