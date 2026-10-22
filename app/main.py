@@ -18,7 +18,7 @@ from typing import Literal
 import bcrypt
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -26,7 +26,8 @@ from .db import ROOT, DB_PATH, TZ, RULE, db, init_db, now, setting, set_setting,
 from .stats import SEATS, records, summary, settle
 from .analysis import ANALYSIS_VERSION, analysis_prompt, analysis_evidence, default_prompts, prompt_fingerprint
 
-APP_VERSION='1.0.9'
+# YY.MMDD.N: Shanghai date and the commit's one-based sequence that day.
+APP_VERSION='26.1022.2'
 
 
 @asynccontextmanager
@@ -919,4 +920,6 @@ app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 
 
 @app.get('/')
-def index():return FileResponse(ROOT/'static/index.html')
+def index():
+    html=(ROOT/'static/index.html').read_text(encoding='utf-8')
+    return HTMLResponse(html.replace('__APP_VERSION__',APP_VERSION))
